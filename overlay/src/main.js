@@ -317,7 +317,8 @@ async function setUi(next) {
   collapseBtn.hidden = next !== "card";
   form.hidden = next !== "input";
   if (next !== "card") contKey = null;
-  cards.hidden = !(next === "card" || next === "pill" || next === "input") || renderCards(now).length === 0;
+  // the open bar is one line: no cards under it
+  cards.hidden = !(next === "card" || next === "pill") || renderCards(now).length === 0;
   if (next === "card") cardSince = now;
   await frame();
   sendRects();
@@ -356,6 +357,8 @@ setNewChat(true);
 
 function setNewChat(on) {
   newChatBtn.classList.toggle("on", on);
+  // a new chat needs no session picked: the bar stays one line
+  $("target").hidden = on;
   updateSend();
   input.placeholder = on ? "Начать новый чат" : "Написать в эту сессию…";
 }
