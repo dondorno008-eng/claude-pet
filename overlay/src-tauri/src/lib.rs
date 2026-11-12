@@ -29,7 +29,6 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Default)]
 struct Shared {
-    paused: AtomicBool,
     dragging: AtomicBool,
     ignoring: AtomicBool,
     /// hidden by ✕ or the hotkey: no walking, no hit-testing
@@ -222,9 +221,7 @@ fn set_dragging(window: WebviewWindow, st: St, dragging: bool) {
 /// compact = 192×208 (pet only), expanded = 460×300 (pet + pill + card/input).
 /// Keeps the top edge and the horizontal centre, so the pet does not move on screen.
 #[tauri::command]
-fn set_mode(window: WebviewWindow, st: St, expanded: bool) -> Result<(), String> {
-    st.paused.store(expanded, Ordering::SeqCst);
-    std::thread::sleep(Duration::from_millis(40)); // let the walker finish its tick
+fn set_mode(window: WebviewWindow, expanded: bool) -> Result<(), String> {
     let (w, h) = if expanded { (EXP_W, EXP_H) } else { (W, H) };
     let scale = window.scale_factor().map_err(e2s)?;
     let pos = window.outer_position().map_err(e2s)?;
@@ -320,31 +317,17 @@ fn mac_window_tweaks(win: &WebviewWindow) {
     ns.setLevel(25);
 }
 
-/// tiny xorshift: walk lengths and pauses need no crypto
-struct Rng(u64);
-impl Rng {
-    fn range(&mut self, lo: u64, hi: u64) -> u64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        lo + self.0 % (hi - lo).max(1)
-    }
-}
-
-/// Walk episodes: rest 6–20 s, gallop 2.5–6 s. Resting, the loop wakes at 10 Hz
-/// only to hit-test the cursor; galloping it moves the window at 30 Hz.
+/// The window moves only when the person drags it: no walks of its own (a pet that moves
+/// under a still cursor reads as a hover). Resting, the loop wakes at 10 Hz to hit-test the cursor.
 fn spawn_ticker(win: WebviewWindow, sh: Arc<Shared>) {
     std::thread::spawn(move || {
-        let mut rng = Rng(now_ms() | 1);
         let mut dir: i32 = 1;
-        let mut walking = false;
-        let mut until = now_ms() + rng.range(3000, 8000);
         let mut drag_last_x: Option<i32> = None;
         let emit_walk = |walking: bool, dir: i32| {
             let _ = win.emit("walk", json!({ "walking": walking, "dir": dir }));
         };
         loop {
-            let busy = sh.dragging.load(Ordering::SeqCst) || (walking && !sh.paused.load(Ordering::SeqCst));
+            let busy = sh.dragging.load(Ordering::SeqCst);
             std::thread::sleep(Duration::from_millis(if busy { 33 } else { 100 }));
             // read again after the sleep: a drag may have started meanwhile
             if sh.dragging.load(Ordering::SeqCst) {
@@ -356,7 +339,7 @@ fn spawn_ticker(win: WebviewWindow, sh: Arc<Shared>) {
                     let d = drag_last_x.map(|l| (nx - l).signum()).unwrap_or(0);
                     if d != 0 && d != dir {
                         dir = d;
-                        emit_walk(walking, dir);
+                        emit_walk(true, dir);
                     }
                     drag_last_x = Some(nx);
                     let _ = win.set_position(PhysicalPosition::new(nx, ny));
@@ -385,40 +368,6 @@ fn spawn_ticker(win: WebviewWindow, sh: Arc<Shared>) {
                     let _ = win.emit("hover", inside);
                 }
             }
-            let t = now_ms();
-            if sh.paused.load(Ordering::SeqCst) {
-                if walking {
-                    walking = false;
-                    emit_walk(walking, dir);
-                }
-                until = t + rng.range(6000, 20000);
-                continue;
-            }
-            if t >= until {
-                walking = !walking;
-                until = t + if walking { rng.range(2500, 6000) } else { rng.range(6000, 20000) };
-                if walking && rng.range(0, 3) == 0 {
-                    dir = -dir;
-                }
-                emit_walk(walking, dir);
-            }
-            if !walking {
-                continue;
-            }
-            let Ok(Some(mon)) = win.current_monitor() else { continue };
-            let Ok(p) = win.outer_position() else { continue };
-            let Ok(sz) = win.outer_size() else { continue };
-            let area = mon.work_area();
-            let step = (2.0 * mon.scale_factor()) as i32;
-            let left = area.position.x;
-            let right = area.position.x + area.size.width as i32 - sz.width as i32;
-            let mut nx = p.x + dir * step.max(1);
-            if nx >= right || nx <= left {
-                nx = nx.clamp(left, right.max(left));
-                dir = -dir;
-                emit_walk(walking, dir);
-            }
-            let _ = win.set_position(PhysicalPosition::new(nx, p.y));
         }
     });
 }

@@ -1,4 +1,4 @@
-import { MAX_CARDS, folderOf, inboxMessage, isLive, labelOf, liveSessions, matchNewChat, moodOf, petMood, resolveId, stopMessage, taskView } from "./state.js";
+import { MAX_CARDS, folderOf, inboxMessage, isLive, labelOf, liveSessions, matchNewChat, resolveId, stopMessage, taskView } from "./state.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -19,15 +19,14 @@ const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---------- sprite: the pack's atlas + pet.json (packs/horse, built by tools/build_atlas.py)
-// an animation is a list of [row, col, ms] steps; "loop" = step to go back to, "once" = play over the mood once
+// an animation is a list of [row, col, ms] steps; "loop" = step to go back to, "once" = play over the pose once
 const SCALE = 0.6375; // 0.75 × 0.85: the horse 15% smaller
-const MOOD_ANIM = { idle: "idle", working: "working", done: "done", failed: "failed", waiting: "waiting" };
 
 let pack = null;
 let anim = null;
 let stepNo = 0;
 let timer = null;
-let oneShot = null; // an animation that plays once over the mood (hello on a second launch)
+let oneShot = null; // an animation that plays once over the pose (hello on a second launch)
 
 function show() {
   const [row, col] = pack.animations[anim].steps[stepNo];
@@ -89,7 +88,6 @@ fetch("pack/pet.json")
 let sessions = [];
 let acks = {};
 let byId = {};
-let mood = "idle";
 let walk = { walking: false, dir: 1 };
 let dragging = false;
 
@@ -103,35 +101,21 @@ try {
   tasks = [];
 }
 const saveTasks = () => localStorage.setItem(TASKS_KEY, JSON.stringify(tasks.slice(-10)));
-// auto-shown attention cards the person closed: key -> true
-const dismissed = new Set();
 // the card whose ↩ field is open: its key
 let contKey = null;
 
+// four poses, set by the person alone (other sessions never move the horse):
+// rest → lies down and stays lying ("done": stand → kneel → lie); dragged → gallops;
+// clicked (input open) → stands ("idle" is the pack's standing pose)
 function refreshAnim() {
+  if (dragging) return play(walk.dir < 0 ? "running-left" : "running-right");
   if (oneShot) return play(oneShot);
-  if (dragging || walk.walking) return play(walk.dir < 0 ? "running-left" : "running-right");
-  play(MOOD_ANIM[mood]);
+  play(ui === "input" ? "idle" : "done");
 }
 
-// a session that wants the person: waiting > failed > done
-function attention(now) {
-  for (const m of ["waiting", "failed", "done"]) {
-    const s = liveSessions(sessions, now).find((x) => moodOf(x, now) === m);
-    if (s) return { s, key: `${s.sessionId}:${m}:${s.doneAt || s.updatedAt}` };
-  }
-  return null;
-}
-
-// what the stack under the horse shows: the last few requests, or else the session that wants attention
-function cardItems(now) {
-  const items = tasks.slice(-MAX_CARDS).reverse().map((t) => ({ key: t.id || t.sid, task: t }));
-  if (items.length > 0) return items;
-  const a = attention(now);
-  if (a && !dismissed.has(a.key)) {
-    return [{ key: a.key, task: { sid: a.s.sessionId, id: null, text: null, at: 0, started: true, stopId: null }, attn: true }];
-  }
-  return [];
+// what the stack under the horse shows: the last few requests the person sent from the horse
+function cardItems() {
+  return tasks.slice(-MAX_CARDS).reverse().map((t) => ({ key: t.id || t.sid, task: t }));
 }
 
 function cardEl(key) {
@@ -242,7 +226,6 @@ async function continueCard(key, text) {
     return;
   }
   const t = { sid, fresh: it.task.fresh, id: msg.id, text: it.task.text || msg.text, at: msg.createdAt, started: false, stopId: null };
-  if (it.attn) dismissed.add(key);
   tasks = tasks.filter((x) => x !== it.task).concat(t);
   saveTasks();
   contKey = null;
@@ -275,12 +258,7 @@ async function stopCard(key) {
   } catch {
     return;
   }
-  if (it.attn) {
-    tasks = tasks.concat({ ...it.task, id: null, text: null, at: msg.createdAt, stopId: msg.id });
-    dismissed.add(key);
-  } else {
-    it.task.stopId = msg.id;
-  }
+  it.task.stopId = msg.id;
   saveTasks();
   renderCards(Date.now());
 }
@@ -288,8 +266,7 @@ async function stopCard(key) {
 async function closeCard(key) {
   const it = itemByKey(key);
   if (!it) return;
-  if (it.attn) dismissed.add(key);
-  else tasks = tasks.filter((x) => x !== it.task);
+  tasks = tasks.filter((x) => x !== it.task);
   saveTasks();
   if (contKey === key) contKey = null;
   if (cardItems(Date.now()).length === 0) return collapse();
@@ -349,10 +326,12 @@ async function setUi(next) {
     await invoke("set_mode", { expanded });
   }
   const now = Date.now();
-  pill.hidden = next === "idle" || next === "input";
+  // the buttons show only under the mouse
+  pill.hidden = !hovered || next === "idle" || next === "input";
   collapseBtn.hidden = next !== "card";
   form.hidden = next !== "input";
   if (next !== "card") contKey = null;
+  refreshAnim();
   // the open bar is one line: no cards under it
   cards.hidden = !(next === "card" || next === "pill") || renderCards(now).length === 0;
   if (next === "card") cardSince = now;
@@ -368,8 +347,6 @@ async function openInput() {
 }
 
 async function collapse() {
-  const a = attention(Date.now());
-  if (a && tasks.length === 0) dismissed.add(a.key);
   folded = true;
   await setUi("idle");
   invoke("blur_app");
@@ -399,7 +376,7 @@ function setNewChat(on) {
   input.placeholder = on ? "Начать новый чат" : "Написать в эту сессию…";
 }
 
-// ---------- the 1 s loop: read the shared folder, update mood, cards and picker
+// ---------- the 1 s loop: read the shared folder, update cards and picker
 let lastShowAt = null;
 
 async function tick() {
@@ -447,10 +424,6 @@ async function tick() {
     if (fresh) return summon();
   } else if (lastShowAt === null) lastShowAt = st.showAt || 0;
 
-  mood = petMood(sessions, now);
-  refreshAnim();
-  const a = attention(now);
-  if (ui === "idle" && a && !dismissed.has(a.key)) await setUi("card");
   const busy = cardItems(now).some((it) => {
     if (!it.task) return false;
     const m = taskView(it.task, byId, acks, now).mood;
@@ -460,7 +433,6 @@ async function tick() {
   else if (ui === "idle" && !folded) await setUi("card");
   if (ui === "card" && !hovered && contKey === null) {
     if (!busy && !hasAnswer() && now - cardSince > 12_000) {
-      if (a) dismissed.add(a.key);
       await setUi("idle");
     }
   }
@@ -486,6 +458,11 @@ listen("hover", async (e) => {
   } else if (!hovered && ui === "pill") {
     await sleep(600);
     if (!hovered && ui === "pill") await setUi("idle");
+  } else if (ui === "card") {
+    if (!hovered) await sleep(600);
+    pill.hidden = !hovered;
+    await frame();
+    sendRects();
   }
 });
 
