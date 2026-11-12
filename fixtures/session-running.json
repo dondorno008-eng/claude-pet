@@ -1,0 +1,3 @@
+{ "v": 1, "sessionId": "a1", "cwd": "/Users/n/news", "project": "news", "title": "Найди последние новости",
+  "status": "running", "step": "Чтение plan.md", "startedAt": 1000, "updatedAt": 100000, "pulseAt": 95000,
+  "doneAt": null, "continuedFrom": null, "continuedAs": null }

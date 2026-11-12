@@ -1,0 +1,264 @@
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  /* native macOS system font (SF Pro) */
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-size: 13px;
+  color: #1c1c1e;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+/* the pet box is the same 192×208 in both window modes and stays top-centre,
+   so resizing the window never moves the pet on screen */
+#stage {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 192px;
+  height: 208px;
+  margin-left: -96px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 8px;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+#pet {
+  pointer-events: auto;
+  cursor: grab;
+  line-height: 0;
+}
+
+#pet.dragging {
+  cursor: grabbing;
+}
+
+#sprite {
+  background-repeat: no-repeat;
+  image-rendering: auto;
+}
+
+/* ----- stand-in SVG: moves only while it gallops, so a resting horse costs nothing */
+#pet[data-anim="running-left"] #fallback {
+  transform: scaleX(-1);
+}
+
+#pet[data-anim^="running"] #fallback,
+#pet[data-anim="waving"] #fallback {
+  animation: bob 0.3s ease-in-out infinite alternate;
+}
+
+#pet[data-anim^="running"] .legs line {
+  transform-origin: 50% 78px;
+  animation: step 0.3s ease-in-out infinite alternate;
+}
+
+#pet[data-anim^="running"] .legs .l2 {
+  animation-direction: alternate-reverse;
+}
+
+#pet[data-anim="hello"] #fallback {
+  animation: jump 0.4s ease-out 2;
+}
+
+#pet[data-anim="failed"] #fallback {
+  filter: grayscale(0.7);
+}
+
+#ui {
+  position: absolute;
+  top: 182px;
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.pill {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  background: #fff;
+  border-radius: 999px;
+  /* soft large shadow; the window keeps ≥20px of room around UI so it is not clipped */
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.16), 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.pill button {
+  width: 30px;
+  height: 28px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.pill button:hover {
+  background: #f0f0f2;
+}
+
+#ask {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+#target {
+  max-width: 320px;
+}
+
+#session {
+  max-width: 320px;
+  font: inherit;
+  font-size: 12px;
+  border: 0;
+  border-radius: 8px;
+  padding: 3px 6px;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.14);
+}
+
+#no-session {
+  display: inline-block;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: #fff;
+  color: #48484a;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.14);
+}
+
+.inputbar {
+  width: 340px;
+  padding: 4px;
+}
+
+#new-chat {
+  color: #48484a;
+  font-size: 18px;
+  line-height: 1;
+}
+
+#new-chat.on {
+  background: #e4f0ff;
+  color: #0060df;
+}
+
+#prompt {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  font: inherit;
+  font-size: 14px;
+  padding: 0 6px;
+}
+
+#send {
+  background: #d1d1d6;
+  color: #fff;
+  font-weight: 700;
+}
+
+#send.ready {
+  background: #0a84ff;
+}
+
+#send.ready:hover {
+  background: #0070e0;
+}
+
+#card {
+  width: 320px;
+  padding: 9px 14px;
+  box-sizing: border-box;
+  background: #fff;
+  border-radius: 14px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.16), 0 1px 3px rgba(0, 0, 0, 0.1);
+  cursor: pointer;
+}
+
+#card-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+#card-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #c7c7cc;
+}
+
+#dot.working {
+  background: #0a84ff;
+}
+#dot.waiting {
+  background: #ff9f0a;
+}
+#dot.failed {
+  background: #ff3b30;
+}
+#dot.done {
+  background: #30d158;
+}
+
+#card-step {
+  color: #6e6e73;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@keyframes bob {
+  from {
+    translate: 0 0;
+  }
+  to {
+    translate: 0 -3px;
+  }
+}
+
+@keyframes step {
+  from {
+    rotate: -14deg;
+  }
+  to {
+    rotate: 14deg;
+  }
+}
+
+@keyframes jump {
+  50% {
+    translate: 0 -30px;
+  }
+}

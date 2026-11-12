@@ -1,2 +1,5 @@
 .ref/
 .claude/worktrees/
+node_modules/
+overlay/src-tauri/target/
+.DS_Store

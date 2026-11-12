@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="styles.css" />
+    <title>Лошадка</title>
+    <script type="module" src="/main.js"></script>
+  </head>
+  <body>
+    <div id="stage">
+      <div id="pet" aria-label="лошадка">
+        <div id="sprite" hidden></div>
+        <!-- stand-in until the horse pack is built: own SVG, no external assets -->
+        <svg id="fallback" viewBox="0 0 120 120" width="140" height="140">
+          <g class="body">
+            <ellipse cx="58" cy="66" rx="34" ry="18" fill="#c8874a" />
+            <path d="M84 58 L98 30 L110 34 L104 60 Z" fill="#c8874a" />
+            <ellipse cx="106" cy="34" rx="9" ry="7" fill="#b2733c" />
+            <path d="M100 26 L103 18 L106 27 Z" fill="#8a5428" />
+            <circle cx="107" cy="31" r="1.8" fill="#222" />
+            <path d="M86 52 Q92 36 100 30" stroke="#5b3518" stroke-width="5" fill="none" stroke-linecap="round" />
+            <path class="tail" d="M25 60 Q10 62 12 82" stroke="#5b3518" stroke-width="5" fill="none" stroke-linecap="round" />
+          </g>
+          <g class="legs" stroke="#8a5428" stroke-width="6" stroke-linecap="round">
+            <line class="l1" x1="38" y1="78" x2="36" y2="104" />
+            <line class="l2" x1="48" y1="80" x2="50" y2="104" />
+            <line class="l1" x1="70" y1="80" x2="68" y2="104" />
+            <line class="l2" x1="80" y1="78" x2="82" y2="104" />
+          </g>
+        </svg>
+      </div>
+    </div>
+
+    <div id="ui">
+      <div id="pill" class="pill" hidden>
+        <button id="btn-write" title="Написать Claude">✎</button>
+        <button id="btn-collapse" title="Свернуть" hidden>˅</button>
+        <button id="btn-quit" title="Убрать лошадку (вернётся с новой сессией Claude)">✕</button>
+      </div>
+      <form id="ask" hidden>
+        <div id="target">
+          <select id="session" title="В какую сессию"></select>
+          <span id="no-session" hidden>Откройте Claude Code — лошадка увидит сессию</span>
+        </div>
+        <div class="pill inputbar">
+          <button id="new-chat" type="button" title="Новый чат в этой сессии">+</button>
+          <input id="prompt" type="text" placeholder="Написать в сессию…" autocomplete="off" maxlength="8000" />
+          <button id="send" type="submit" title="Отправить" disabled>↑</button>
+        </div>
+      </form>
+      <div id="card" hidden>
+        <div id="card-title"><span id="dot"></span><span id="card-name"></span></div>
+        <div id="card-step"></div>
+      </div>
+    </div>
+  </body>
+</html>
