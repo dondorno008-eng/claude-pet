@@ -18,72 +18,72 @@ const collapseBtn = $("btn-collapse");
 const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// ---------- sprite: the pack's atlas, 8×9 frames of 192×208 (docs/plan.md)
-const FW = 192;
-const FH = 208;
+// ---------- sprite: the pack's atlas + pet.json (packs/horse, built by tools/build_atlas.py)
+// an animation is a list of [row, col, ms] steps; "loop" = step to go back to, "once" = play over the mood once
 const SCALE = 0.75;
-const ANIMS = {
-  idle: { row: 0, frames: 6, fps: 5 },
-  "running-right": { row: 1, frames: 8, fps: 12 },
-  "running-left": { row: 2, frames: 8, fps: 12 },
-  waving: { row: 3, frames: 4, fps: 6 },
-  jumping: { row: 4, frames: 5, fps: 10 },
-  failed: { row: 5, frames: 8, fps: 6 },
-  waiting: { row: 6, frames: 6, fps: 5 },
-  running: { row: 7, frames: 6, fps: 8 },
-  review: { row: 8, frames: 6, fps: 6 },
-};
-const MOOD_ANIM = { idle: "idle", working: "running", done: "waving", failed: "failed", waiting: "waiting" };
+const MOOD_ANIM = { idle: "idle", working: "working", done: "done", failed: "failed", waiting: "waiting" };
 
-let hasSprite = false;
+let pack = null;
 let anim = null;
-let frameNo = 0;
+let stepNo = 0;
 let timer = null;
-let oneShot = null; // an animation that plays once over the mood (hello jump)
+let oneShot = null; // an animation that plays once over the mood (hello on a second launch)
 
-function draw() {
-  const a = ANIMS[anim];
-  sprite.style.backgroundPosition = `${-frameNo * FW * SCALE}px ${-a.row * FH * SCALE}px`;
+function show() {
+  const [row, col] = pack.animations[anim].steps[stepNo];
+  sprite.style.backgroundPosition = `${-col * pack.cell * SCALE}px ${-row * pack.cell * SCALE}px`;
+}
+
+function next() {
+  const a = pack.animations[anim];
+  timer = setTimeout(() => {
+    stepNo += 1;
+    if (stepNo >= a.steps.length) {
+      if (a.once) {
+        if (oneShot === anim) oneShot = null;
+        anim = null;
+        refreshAnim();
+        return;
+      }
+      stepNo = a.loop || 0;
+    }
+    show();
+    next();
+  }, a.steps[stepNo][2]);
 }
 
 function play(name) {
   if (name === anim) return;
   anim = name;
-  frameNo = 0;
-  clearInterval(timer);
+  stepNo = 0;
+  clearTimeout(timer);
   timer = null;
   pet.dataset.anim = name;
-  if (!hasSprite) return; // the stand-in SVG animates by CSS class
-  draw();
-  const a = ANIMS[name];
-  timer = setInterval(() => {
-    frameNo += 1;
-    if (frameNo >= a.frames) {
-      if (oneShot === name) {
-        oneShot = null;
-        refreshAnim();
-        return;
-      }
-      frameNo = 0;
-    }
-    draw();
-  }, 1000 / a.fps);
+  if (!pack || !pack.animations[name]) return; // the stand-in SVG animates by CSS
+  show();
+  next();
 }
 
-const img = new Image();
-img.onload = () => {
-  hasSprite = true;
-  sprite.style.width = `${FW * SCALE}px`;
-  sprite.style.height = `${FH * SCALE}px`;
-  sprite.style.backgroundSize = `${img.naturalWidth * SCALE}px ${img.naturalHeight * SCALE}px`;
-  sprite.hidden = false;
-  $("fallback").remove();
-  anim = null;
-  refreshAnim();
-  sendRects();
-};
-img.src = "pack/spritesheet.webp";
-sprite.style.backgroundImage = `url(${img.src})`;
+fetch("pack/pet.json")
+  .then((r) => r.json())
+  .then((p) => {
+    const img = new Image();
+    img.onload = () => {
+      pack = p;
+      const side = p.cell * SCALE;
+      sprite.style.width = `${side}px`;
+      sprite.style.height = `${side}px`;
+      sprite.style.backgroundImage = `url(${img.src})`;
+      sprite.style.backgroundSize = `${img.naturalWidth * SCALE}px ${img.naturalHeight * SCALE}px`;
+      sprite.hidden = false;
+      $("fallback").remove();
+      anim = null;
+      refreshAnim();
+      sendRects();
+    };
+    img.src = `pack/${p.spritesheetPath}`;
+  })
+  .catch(() => {}); // no pack: keep the stand-in
 
 // ---------- what the sessions are doing (files of docs/protocol.md, via Rust)
 let sessions = [];
@@ -268,7 +268,7 @@ listen("walk", (e) => {
 });
 
 listen("second-instance", () => {
-  oneShot = "jumping";
+  oneShot = "hello";
   refreshAnim();
 });
 

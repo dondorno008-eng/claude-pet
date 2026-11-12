@@ -67,7 +67,7 @@ body {
   animation-direction: alternate-reverse;
 }
 
-#pet[data-anim="jumping"] #fallback {
+#pet[data-anim="hello"] #fallback {
   animation: jump 0.4s ease-out 2;
 }
 
