@@ -1,0 +1,66 @@
+# Tag vX.Y.Z → build HorsePet.app (universal: Apple Silicon + Intel) → GitHub Release HorsePet.zip.
+# install.sh downloads releases/latest/download/HorsePet.zip.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mac:
+    runs-on: macos-14
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            overlay/src-tauri/target
+          key: cargo-${{ hashFiles('overlay/src-tauri/Cargo.lock') }}
+
+      - name: Protocol fixtures
+        run: node fixtures/check.mjs
+
+      - name: Window tests
+        working-directory: overlay/src-tauri
+        run: cargo test
+
+      - name: Build
+        working-directory: overlay
+        run: |
+          npm ci
+          npx tauri build --target universal-apple-darwin
+
+      - name: Zip
+        run: |
+          APP=overlay/src-tauri/target/universal-apple-darwin/release/bundle/macos/HorsePet.app
+          test -d "$APP"
+          ditto -c -k --keepParent "$APP" HorsePet.zip
+          ls -la HorsePet.zip
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" HorsePet.zip --title "Лошадка $GITHUB_REF_NAME" --generate-notes
+
+      - name: Keep the build (manual runs)
+        if: "!startsWith(github.ref, 'refs/tags/v')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: HorsePet
+          path: HorsePet.zip
