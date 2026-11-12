@@ -1,5 +1,6 @@
 {
   "name": "horse-pet",
-  "version": "0.0.1",
-  "description": "Spike S1: writes session state for the desktop pet and submits prompts the pet drops in its inbox."
+  "version": "0.1.0",
+  "description": "A desktop horse for Claude Code: shows what each session is doing and lets you send a prompt to it from the horse.",
+  "license": "MIT"
 }
