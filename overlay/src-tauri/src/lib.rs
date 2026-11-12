@@ -3,7 +3,7 @@
 // except the visible elements (the cursor is polled and hit-tested here, and
 // ignore-cursor-events is toggled per element). Talks to the Claude Code mod
 // through files only, see docs/protocol.md:
-//   reads  ~/.claude-pet/sessions/*.json, acks/*.json
+//   reads  ~/.claude-pet/sessions/*.json, acks/*.json, show.json (/horse)
 //   writes ~/.claude-pet/inbox/<sessionId>.json (atomic), overlay.json (pulse)
 //   drops  inbox files once acked, and session files dead for over a day
 use std::fs::{self, DirBuilder, OpenOptions};
@@ -14,13 +14,15 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+mod newchat;
+
 use serde_json::{Map, Value, json};
 use tauri::{Emitter, LogicalSize, Manager, PhysicalPosition, WebviewWindow};
 
 const W: f64 = 192.0;
 const H: f64 = 208.0;
 const EXP_W: f64 = 460.0;
-const EXP_H: f64 = 300.0;
+const EXP_H: f64 = 420.0;
 const DAY_MS: u64 = 24 * 3600 * 1000;
 const PULSE_MS: u64 = 15_000;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -30,6 +32,8 @@ struct Shared {
     paused: AtomicBool,
     dragging: AtomicBool,
     ignoring: AtomicBool,
+    /// hidden by ✕ or the hotkey: no walking, no hit-testing
+    hidden: AtomicBool,
     /// pid of the app that was frontmost before we took focus (macOS)
     prev_app: AtomicI32,
     /// (cursor x, cursor y, window x, window y) in physical px at drag start
@@ -139,7 +143,20 @@ pub fn scan(base: &Path, now: u64) -> Value {
             }
         }
     }
-    json!({ "sessions": sessions, "acks": acks })
+    let show_at = read_json(&base.join("show.json")).map(|v| num(&v, "at")).unwrap_or(0);
+    json!({ "sessions": sessions, "acks": acks, "showAt": show_at })
+}
+
+/// an inbox message: a prompt (1…8000 chars) or a stop, always with an id
+pub fn message_ok(body: &Value) -> bool {
+    if id_of(body).is_none() {
+        return false;
+    }
+    if body.get("stop").and_then(Value::as_bool) == Some(true) {
+        return true;
+    }
+    let text = body.get("text").and_then(Value::as_str).unwrap_or("");
+    !text.trim().is_empty() && text.chars().count() <= 8000
 }
 
 #[tauri::command]
@@ -152,13 +169,59 @@ fn submit(session_id: String, body: Value) -> Result<(), String> {
     if !safe_sid(&session_id) {
         return Err("bad session id".into());
     }
-    let text = body.get("text").and_then(Value::as_str).unwrap_or("");
-    if id_of(&body).is_none() || text.trim().is_empty() || text.chars().count() > 8000 {
+    if !message_ok(&body) {
         return Err("bad message".into());
     }
     let b = base();
     ensure_dirs(&b);
     write_atomic(&b.join("inbox").join(format!("{session_id}.json")), &body.to_string())
+}
+
+/// the bar's request → a new chat in Claude's desktop app; true = Enter was pressed for the person
+#[tauri::command]
+async fn open_new_chat(app: tauri::AppHandle, st: St<'_>, text: String, folder: Option<String>) -> Result<bool, String> {
+    if text.trim().is_empty() || text.chars().count() > 8000 {
+        return Err("bad message".into());
+    }
+    let url = newchat::new_chat_url(&text, folder.as_deref());
+    let ok = std::process::Command::new("/usr/bin/open").arg(&url).status().map_err(e2s)?.success();
+    if !ok {
+        return Err("Claude не открылся".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let prev = st.prev_app.load(Ordering::SeqCst);
+        let pressed = tauri::async_runtime::spawn_blocking(move || {
+            newchat::mac::press_enter_when_ready(&text, Duration::from_secs(8))
+        })
+        .await
+        .unwrap_or(false);
+        if pressed && prev > 0 {
+            // Enter went for the person: give them back the window they were in
+            std::thread::sleep(Duration::from_millis(400));
+            let _ = app.run_on_main_thread(move || {
+                use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
+                if let Some(a) = NSRunningApplication::runningApplicationWithProcessIdentifier(prev) {
+                    a.activateWithOptions(NSApplicationActivationOptions::empty());
+                }
+            });
+        }
+        Ok(pressed)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, st);
+        Ok(false)
+    }
+}
+
+/// may HorsePet press Enter in Claude (macOS Accessibility permission)?
+#[tauri::command]
+fn can_autosend() -> bool {
+    #[cfg(target_os = "macos")]
+    return newchat::mac::trusted();
+    #[cfg(not(target_os = "macos"))]
+    false
 }
 
 #[tauri::command]
@@ -216,6 +279,27 @@ fn focus_input(window: WebviewWindow, st: St) -> Result<(), String> {
 fn quit(app: tauri::AppHandle) {
     app.exit(0);
 }
+
+/// ✕ and the hotkey hide the horse; the hotkey and /horse bring it back
+#[tauri::command]
+fn hide_window(window: WebviewWindow, st: St) -> Result<(), String> {
+    st.hidden.store(true, Ordering::SeqCst);
+    window.hide().map_err(e2s)
+}
+
+#[tauri::command]
+fn show_window(window: WebviewWindow, st: St) -> Result<(), String> {
+    reveal(&window, &st);
+    Ok(())
+}
+
+fn reveal(window: &WebviewWindow, sh: &Shared) {
+    sh.hidden.store(false, Ordering::SeqCst);
+    let _ = window.show();
+}
+
+/// ⌃⌥Space: hidden → shown with the input open; shown → the window decides (input ↔ pet)
+const HOTKEY: &str = "ctrl+alt+space";
 
 /// remember which app owns the keyboard right now (if it is not us)
 fn remember_front(sh: &Shared) {
@@ -305,6 +389,9 @@ fn spawn_ticker(win: WebviewWindow, sh: Arc<Shared>) {
                 continue;
             }
             drag_last_x = None;
+            if sh.hidden.load(Ordering::SeqCst) {
+                continue;
+            }
             if let (Ok(c), Ok(p), Ok(scale)) = (win.cursor_position(), win.outer_position(), win.scale_factor()) {
                 let lx = (c.x - p.x as f64) / scale;
                 let ly = (c.y - p.y as f64) / scale;
@@ -382,12 +469,32 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             // the mod launched us again: say hello instead of opening a second horse
             if let Some(w) = app.get_webview_window("main") {
+                reveal(&w, &app.state::<Arc<Shared>>());
                 let _ = w.emit("second-instance", ());
             }
         }))
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_shortcuts([HOTKEY])
+                .expect("hotkey")
+                .with_handler(|app, _shortcut, event| {
+                    use tauri_plugin_global_shortcut::ShortcutState;
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    let Some(w) = app.get_webview_window("main") else { return };
+                    let sh = app.state::<Arc<Shared>>();
+                    let was_hidden = sh.hidden.load(Ordering::SeqCst) || !w.is_visible().unwrap_or(true);
+                    remember_front(&sh);
+                    reveal(&w, &sh);
+                    let _ = w.emit("hotkey", was_hidden);
+                })
+                .build(),
+        )
         .manage(shared)
         .invoke_handler(tauri::generate_handler![
-            read_state, submit, set_hit_rects, set_dragging, set_mode, focus_input, blur_app, quit
+            read_state, submit, set_hit_rects, set_dragging, set_mode, focus_input, blur_app, quit, hide_window,
+            show_window, open_new_chat, can_autosend
         ])
         .setup(move |app| {
             #[cfg(target_os = "macos")]
@@ -435,6 +542,16 @@ mod tests {
     }
 
     #[test]
+    fn a_message_is_a_prompt_or_a_stop() {
+        assert!(message_ok(&json!({ "id": "m", "text": "hi" })));
+        assert!(message_ok(&json!({ "id": "m", "stop": true })));
+        assert!(!message_ok(&json!({ "id": "m", "text": "  " })));
+        assert!(!message_ok(&json!({ "id": "m", "stop": false })));
+        assert!(!message_ok(&json!({ "stop": true })));
+        assert!(!message_ok(&json!({ "id": "m", "text": "x".repeat(8001) })));
+    }
+
+    #[test]
     fn a_session_is_dead_after_a_day_without_writes() {
         let now = 10 * DAY_MS;
         assert!(!is_dead(&json!({ "updatedAt": now - 1000, "pulseAt": 0 }), now));
@@ -464,11 +581,13 @@ mod tests {
         put("acks/live.json", json!({ "id": "m1", "status": "started" }));
         put("inbox/live.json", json!({ "id": "m1", "text": "hi" }));
         fs::write(b.join("sessions/half.json"), "{\"sessionId\":").unwrap();
+        put("show.json", json!({ "v": 1, "at": 1234 }));
 
         let st = scan(&b, now);
         let ids: Vec<_> = st["sessions"].as_array().unwrap().iter().map(|s| s["sessionId"].clone()).collect();
         assert_eq!(ids, vec![json!("live")]);
         assert_eq!(st["acks"]["live"]["id"], "m1");
+        assert_eq!(st["showAt"], 1234);
         assert!(st["acks"].get("old").is_none());
         assert!(!b.join("sessions/old.json").exists());
         assert!(!b.join("acks/old.json").exists());

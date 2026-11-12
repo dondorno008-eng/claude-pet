@@ -186,31 +186,63 @@ body {
   background: #0070e0;
 }
 
-#card {
+#cards {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.card {
   width: 320px;
-  padding: 9px 14px;
+  padding: 8px 8px 8px 14px;
   box-sizing: border-box;
   background: #fff;
   border-radius: 14px;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.16), 0 1px 3px rgba(0, 0, 0, 0.1);
-  cursor: pointer;
 }
 
-#card-title {
+.card-head {
   display: flex;
   align-items: center;
   gap: 7px;
   font-weight: 600;
   white-space: nowrap;
-  overflow: hidden;
 }
 
-#card-name {
+.card-name {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-#dot {
+.card-head button,
+.cont button {
+  flex: none;
+  width: 24px;
+  height: 22px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #6e6e73;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 400;
+  cursor: pointer;
+}
+
+.card-head button:hover,
+.cont button:hover {
+  background: #f0f0f2;
+  color: #1c1c1e;
+}
+
+.c-stop {
+  font-size: 10px !important;
+}
+
+.dot {
   flex: none;
   width: 8px;
   height: 8px;
@@ -218,25 +250,62 @@ body {
   background: #c7c7cc;
 }
 
-#dot.working {
+.dot.working {
   background: #0a84ff;
 }
-#dot.waiting {
+.dot.waiting {
   background: #ff9f0a;
 }
-#dot.failed {
+.dot.failed {
   background: #ff3b30;
 }
-#dot.done {
+/* done: a green check instead of the dot */
+.dot.done {
+  width: 14px;
+  height: 14px;
+  margin: 0 -3px;
   background: #30d158;
+  position: relative;
+}
+.dot.done::after {
+  content: "";
+  position: absolute;
+  left: 4.5px;
+  top: 2.5px;
+  width: 3px;
+  height: 6px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
 }
 
-#card-step {
+.card-step {
   color: #6e6e73;
   margin-top: 2px;
+  padding-right: 6px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.cont {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 3px 3px 3px 10px;
+  border-radius: 10px;
+  background: #f2f2f7;
+}
+
+.cont input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  font: inherit;
 }
 
 @keyframes bob {

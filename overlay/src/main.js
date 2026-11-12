@@ -1,4 +1,4 @@
-import { MOOD_TEXT, cardSession, inboxMessage, labelOf, liveSessions, moodOf, petMood, resolveId } from "./state.js";
+import { MAX_CARDS, folderOf, inboxMessage, labelOf, liveSessions, matchNewChat, moodOf, petMood, resolveId, stopMessage, taskView } from "./state.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -12,7 +12,7 @@ const input = $("prompt");
 const send = $("send");
 const picker = $("session");
 const newChatBtn = $("new-chat");
-const card = $("card");
+const cards = $("cards");
 const collapseBtn = $("btn-collapse");
 
 const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
@@ -88,14 +88,25 @@ fetch("pack/pet.json")
 // ---------- what the sessions are doing (files of docs/protocol.md, via Rust)
 let sessions = [];
 let acks = {};
+let byId = {};
 let mood = "idle";
 let walk = { walking: false, dir: 1 };
 let dragging = false;
 
-// the last prompt the person sent: { sid, id, at }
-let lastSent = null;
-// auto-shown cards the person closed: key -> true
+// the requests the person sent, newest last: { sid, id, text, at, started, stopId }
+// a new chat in Claude starts as { sid: null, fresh: true, pressed } until its session shows up
+const TASKS_KEY = "horse.tasks";
+let tasks = [];
+try {
+  tasks = JSON.parse(localStorage.getItem(TASKS_KEY) || "[]").filter((t) => t && (t.sid || t.fresh));
+} catch {
+  tasks = [];
+}
+const saveTasks = () => localStorage.setItem(TASKS_KEY, JSON.stringify(tasks.slice(-10)));
+// auto-shown attention cards the person closed: key -> true
 const dismissed = new Set();
+// the card whose ↩ field is open: its key
+let contKey = null;
 
 function refreshAnim() {
   if (oneShot) return play(oneShot);
@@ -112,37 +123,149 @@ function attention(now) {
   return null;
 }
 
-function stepLine(s, now) {
-  const byId = Object.fromEntries(sessions.map((x) => [x.sessionId, x]));
-  if (lastSent && resolveId(lastSent.sid, byId) === s.sessionId) {
-    const ack = acks[s.sessionId];
-    if (!ack || ack.id !== lastSent.id) {
-      return now - lastSent.at > 8000 ? "Claude пока не забрал промпт — сессия открыта?" : "Отправляю…";
-    }
-    if (ack.status === "queued") return "В очереди — Claude закончит текущий ход";
-    if (ack.status === "failed") return `Не отправилось: ${ack.error || "ошибка"}`;
+// what the stack under the horse shows: the last few requests, or else the session that wants attention
+function cardItems(now) {
+  const items = tasks.slice(-MAX_CARDS).reverse().map((t) => ({ key: t.id || t.sid, task: t }));
+  if (items.length > 0) return items;
+  const a = attention(now);
+  if (a && !dismissed.has(a.key)) {
+    return [{ key: a.key, task: { sid: a.s.sessionId, id: null, text: null, at: 0, started: true, stopId: null }, attn: true }];
   }
-  return s.step || MOOD_TEXT[moodOf(s, now)] || "Свободна";
+  return [];
 }
 
-function renderCard(now) {
-  const a = attention(now);
-  const s = (autoCard && a?.s) || cardSession(sessions, lastSent?.sid, now);
-  if (!s) {
-    $("card-name").textContent = "Нет открытых сессий";
-    $("card-step").textContent = "Лошадка ждёт, пока вы откроете Claude Code";
-    $("dot").className = "";
+function cardEl(key) {
+  let el = cards.querySelector(`[data-key="${CSS.escape(key)}"]`);
+  if (el) return el;
+  el = document.createElement("div");
+  el.className = "card";
+  el.dataset.key = key;
+  el.innerHTML = `
+    <div class="card-head">
+      <span class="dot"></span><span class="card-name"></span>
+      <button class="c-cont" type="button" title="Продолжить этот чат">↩</button>
+      <button class="c-stop" type="button" title="Остановить">■</button>
+      <button class="c-close" type="button" title="Закрыть карточку">×</button>
+    </div>
+    <div class="card-step"></div>
+    <form class="cont" hidden>
+      <input type="text" placeholder="Продолжить…" autocomplete="off" maxlength="8000" />
+      <button type="submit" title="Отправить в этот чат">↑</button>
+    </form>`;
+  el.querySelector(".c-cont").addEventListener("click", () => openCont(key));
+  el.querySelector(".c-stop").addEventListener("click", () => stopCard(key));
+  el.querySelector(".c-close").addEventListener("click", () => closeCard(key));
+  el.querySelector(".card-step").addEventListener("click", () => openCont(key));
+  const f = el.querySelector(".cont");
+  f.addEventListener("submit", (e) => {
+    e.preventDefault();
+    continueCard(key, f.querySelector("input").value);
+  });
+  f.querySelector("input").addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeCont();
+  });
+  return el;
+}
+
+function renderCards(now) {
+  const items = cardItems(now);
+  const keep = new Set(items.map((i) => i.key));
+  for (const el of [...cards.children]) if (!keep.has(el.dataset.key)) el.remove();
+  if (contKey && !keep.has(contKey)) contKey = null;
+  items.forEach((it, i) => {
+    const el = cardEl(it.key);
+    if (cards.children[i] !== el) cards.insertBefore(el, cards.children[i] || null);
+    const v = taskView(it.task, byId, acks, now);
+    const s = byId[v.sid];
+    el.querySelector(".card-name").textContent = it.task.text || (s ? labelOf(s) : "Чат");
+    el.querySelector(".card-step").textContent = v.text;
+    el.querySelector(".dot").className = `dot ${v.mood}`;
+    el.querySelector(".c-stop").hidden = !v.canStop;
+    el.querySelector(".c-cont").hidden = !v.sid;
+    el.querySelector(".cont").hidden = contKey !== it.key;
+  });
+  return items;
+}
+
+function itemByKey(key) {
+  return cardItems(Date.now()).find((i) => i.key === key);
+}
+
+async function openCont(key) {
+  contKey = key;
+  renderCards(Date.now());
+  await frame();
+  sendRects();
+  await invoke("focus_input");
+  cards.querySelector(`[data-key="${CSS.escape(key)}"] .cont input`)?.focus();
+}
+
+async function closeCont() {
+  contKey = null;
+  renderCards(Date.now());
+  await frame();
+  sendRects();
+  invoke("blur_app");
+}
+
+async function continueCard(key, text) {
+  const it = itemByKey(key);
+  if (!it) return;
+  const sid = resolveId(it.task.sid, byId);
+  if (!sid) return;
+  let msg;
+  try {
+    msg = inboxMessage(text, false, crypto.randomUUID(), Date.now());
+    await invoke("submit", { sessionId: sid, body: msg });
+  } catch (err) {
+    cards.querySelector(`[data-key="${CSS.escape(key)}"] .cont input`).title = String(err.message || err);
     return;
   }
-  $("card-name").textContent = labelOf(s);
-  $("card-step").textContent = stepLine(s, now);
-  $("dot").className = moodOf(s, now);
+  const t = { sid, id: msg.id, text: it.task.text || msg.text, at: msg.createdAt, started: false, stopId: null };
+  if (it.attn) dismissed.add(key);
+  tasks = tasks.filter((x) => x !== it.task).concat(t);
+  saveTasks();
+  contKey = null;
+  await setUi("card");
+  invoke("blur_app");
+}
+
+async function stopCard(key) {
+  const it = itemByKey(key);
+  if (!it) return;
+  const msg = stopMessage(crypto.randomUUID(), Date.now());
+  try {
+    await invoke("submit", { sessionId: resolveId(it.task.sid, byId), body: msg });
+  } catch {
+    return;
+  }
+  if (it.attn) {
+    tasks = tasks.concat({ ...it.task, id: null, text: null, at: msg.createdAt, stopId: msg.id });
+    dismissed.add(key);
+  } else {
+    it.task.stopId = msg.id;
+  }
+  saveTasks();
+  renderCards(Date.now());
+}
+
+async function closeCard(key) {
+  const it = itemByKey(key);
+  if (!it) return;
+  if (it.attn) dismissed.add(key);
+  else tasks = tasks.filter((x) => x !== it.task);
+  saveTasks();
+  if (contKey === key) contKey = null;
+  if (cardItems(Date.now()).length === 0) return collapse();
+  renderCards(Date.now());
+  await frame();
+  sendRects();
 }
 
 function renderPicker(now) {
   const live = liveSessions(sessions, now);
-  const byId = Object.fromEntries(sessions.map((x) => [x.sessionId, x]));
-  const keep = picker.value || (lastSent && resolveId(lastSent.sid, byId));
+  const last = tasks[tasks.length - 1];
+  const keep = picker.value || (last && resolveId(last.sid, byId));
   picker.replaceChildren(
     ...live.map((s) => {
       const o = document.createElement("option");
@@ -158,7 +281,8 @@ function renderPicker(now) {
 }
 
 function updateSend() {
-  const ok = input.value.trim().length > 0 && !picker.hidden && picker.value;
+  const target = newChatBtn.classList.contains("on") || (!picker.hidden && picker.value);
+  const ok = input.value.trim().length > 0 && !!target;
   send.disabled = !ok;
   send.classList.toggle("ready", !!ok);
 }
@@ -167,13 +291,13 @@ function updateSend() {
 let ui = "idle";
 let expanded = false;
 let hovered = false;
-let autoCard = false; // the card was opened by a session wanting attention
 let cardSince = 0;
+let folded = false; // the person folded the cards while a task works: do not pop them back
 
 // tell Rust where the visible, clickable things are; everything else is click-through
 function sendRects() {
-  const rects = [pet, pill, form, card]
-    .filter((el) => !el.hidden)
+  const rects = [pet, pill, form, ...cards.children]
+    .filter((el) => !el.hidden && !(el.parentElement === cards && cards.hidden))
     .map((el) => {
       const r = el.getBoundingClientRect();
       return [r.x, r.y, r.width, r.height];
@@ -192,16 +316,14 @@ async function setUi(next) {
   pill.hidden = next === "idle" || next === "input";
   collapseBtn.hidden = next !== "card";
   form.hidden = next !== "input";
-  card.hidden = !(next === "card" || (next === "pill" && liveSessions(sessions, now).length > 0));
-  if (!card.hidden) renderCard(now);
+  if (next !== "card") contKey = null;
+  cards.hidden = !(next === "card" || next === "pill" || next === "input") || renderCards(now).length === 0;
   if (next === "card") cardSince = now;
-  if (next !== "card") autoCard = false;
   await frame();
   sendRects();
 }
 
 async function openInput() {
-  autoCard = false;
   await setUi("input");
   renderPicker(Date.now());
   await invoke("focus_input");
@@ -209,43 +331,105 @@ async function openInput() {
 }
 
 async function collapse() {
-  if (autoCard) dismissed.add(attention(Date.now())?.key);
+  const a = attention(Date.now());
+  if (a && tasks.length === 0) dismissed.add(a.key);
+  folded = true;
   await setUi("idle");
   invoke("blur_app");
 }
 
-function setNewChat(on) {
-  newChatBtn.classList.toggle("on", on);
-  input.placeholder = on ? "Начать новый чат" : "Написать в сессию…";
+async function hide() {
+  await setUi("idle");
+  await invoke("hide_window");
+  invoke("blur_app");
 }
 
-// ---------- the 1 s loop: read the shared folder, update mood, card and picker
+// /horse or the hotkey: the horse is back, with the input open
+async function summon() {
+  await invoke("show_window");
+  oneShot = "hello";
+  refreshAnim();
+  await openInput();
+}
+
+// may we press Enter in Claude for the person (Accessibility permission)?
+let autosend = false;
+setNewChat(true);
+invoke("can_autosend").then((v) => {
+  autosend = v;
+  setNewChat(newChatBtn.classList.contains("on"));
+});
+
+function setNewChat(on) {
+  newChatBtn.classList.toggle("on", on);
+  updateSend();
+  input.placeholder = on ? (autosend ? "Начать новый чат" : "Новый чат — Enter нажмёте в Claude") : "Написать в эту сессию…";
+}
+
+// ---------- the 1 s loop: read the shared folder, update mood, cards and picker
+let lastShowAt = null;
+
 async function tick() {
+  let st;
   try {
-    const st = await invoke("read_state");
-    sessions = st.sessions;
-    acks = st.acks;
+    st = await invoke("read_state");
   } catch {
     return;
   }
+  sessions = st.sessions;
+  acks = st.acks;
+  byId = Object.fromEntries(sessions.map((x) => [x.sessionId, x]));
   const now = Date.now();
+  let changed = false;
+  for (const t of tasks) {
+    if (t.fresh && !t.sid) {
+      const s = matchNewChat(t, sessions);
+      if (s) {
+        t.sid = s.sessionId;
+        t.started = true;
+        changed = true;
+      }
+      continue;
+    }
+    const ack = acks[resolveId(t.sid, byId)];
+    if (!t.started && t.id && ack && ack.id === t.id && ack.status !== "queued") {
+      t.started = true;
+      changed = true;
+    }
+  }
+  if (changed) saveTasks();
+  // /horse wrote show.json: a new stamp, or a fresh one when /horse just started us
+  if (st.showAt && st.showAt !== lastShowAt) {
+    const fresh = lastShowAt !== null || now - st.showAt < 15_000;
+    lastShowAt = st.showAt;
+    if (fresh) return summon();
+  } else if (lastShowAt === null) lastShowAt = st.showAt || 0;
+
   mood = petMood(sessions, now);
   refreshAnim();
   const a = attention(now);
-  if (ui === "idle" && a && !dismissed.has(a.key)) {
-    autoCard = true;
-    await setUi("card");
-  }
-  if (ui === "card" && !hovered) {
-    const urgent = autoCard && a && (mood === "waiting" || mood === "failed") && !dismissed.has(a.key);
-    const stale = now - cardSince > 12_000;
-    if (autoCard && !a) await setUi("idle"); // the reason went away
-    else if (!urgent && stale) {
-      if (autoCard && a) dismissed.add(a.key);
+  if (ui === "idle" && a && !dismissed.has(a.key)) await setUi("card");
+  const busy = cardItems(now).some((it) => {
+    if (!it.task) return false;
+    const m = taskView(it.task, byId, acks, now).mood;
+    return m === "working" || m === "waiting";
+  });
+  if (!busy) folded = false;
+  else if (ui === "idle" && !folded) await setUi("card");
+  if (ui === "card" && !hovered && contKey === null) {
+    if (!busy && now - cardSince > 12_000) {
+      if (a) dismissed.add(a.key);
       await setUi("idle");
     }
   }
-  if (!card.hidden) renderCard(now);
+  if (!cards.hidden) {
+    const n = cards.children.length;
+    renderCards(now);
+    if (cards.children.length !== n) {
+      await frame();
+      sendRects();
+    }
+  }
   if (ui === "input") renderPicker(now);
 }
 setInterval(tick, 1000);
@@ -270,6 +454,13 @@ listen("walk", (e) => {
 listen("second-instance", () => {
   oneShot = "hello";
   refreshAnim();
+});
+
+// ⌃⌥Space: hidden → back with the input open; input open → fold to the pet; else → input
+listen("hotkey", (e) => {
+  if (e.payload) return summon();
+  if (ui === "input") return collapse();
+  return openInput();
 });
 
 // ---------- drag vs click on the pet (the window itself follows the cursor in Rust)
@@ -307,8 +498,7 @@ pet.addEventListener("pointerup", async () => {
 
 $("btn-write").addEventListener("click", openInput);
 collapseBtn.addEventListener("click", collapse);
-$("btn-quit").addEventListener("click", () => invoke("quit"));
-card.addEventListener("click", openInput);
+$("btn-quit").addEventListener("click", hide);
 newChatBtn.addEventListener("click", () => {
   setNewChat(!newChatBtn.classList.contains("on"));
   input.focus();
@@ -321,10 +511,39 @@ input.addEventListener("keydown", (e) => {
 window.addEventListener("blur", () => {
   // clicked somewhere else: an empty input folds away by itself
   if (ui === "input" && !input.value.trim()) setUi("idle");
+  if (contKey !== null) {
+    const v = cards.querySelector(`[data-key="${CSS.escape(contKey)}"] .cont input`);
+    if (!v || !v.value.trim()) closeCont();
+  }
 });
+
+// default: every request is a new chat in Claude's desktop app, in the picked session's project
+async function sendNewChat(text) {
+  const t = { sid: null, fresh: true, id: crypto.randomUUID(), text, at: Date.now(), started: false, stopId: null, pressed: null };
+  const folder = folderOf(byId[picker.value]?.cwd);
+  tasks = tasks.concat(t);
+  folded = false;
+  saveTasks();
+  input.value = "";
+  updateSend();
+  await setUi("card");
+  try {
+    // Claude comes to the front; it hands focus back only when Enter was pressed for the person
+    t.pressed = await invoke("open_new_chat", { text, folder });
+  } catch (err) {
+    t.pressed = false;
+    input.title = `Не открылось: ${err}`;
+  }
+  saveTasks();
+}
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
+  if (newChatBtn.classList.contains("on")) {
+    const text = input.value.trim();
+    if (text) await sendNewChat(text);
+    return;
+  }
   const sid = picker.value;
   if (!sid) return;
   let msg;
@@ -340,11 +559,12 @@ form.addEventListener("submit", async (e) => {
     input.title = `Не записалось: ${err}`;
     return;
   }
-  lastSent = { sid, id: msg.id, at: Date.now() };
+  tasks = tasks.concat({ sid, id: msg.id, text: msg.text, at: msg.createdAt, started: false, stopId: null });
+  folded = false;
+  saveTasks();
   input.value = "";
-  setNewChat(false);
+  setNewChat(true);
   updateSend();
-  autoCard = false;
   await setUi("card");
   invoke("blur_app");
 });

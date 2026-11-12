@@ -35,7 +35,7 @@
       <div id="pill" class="pill" hidden>
         <button id="btn-write" title="Написать Claude">✎</button>
         <button id="btn-collapse" title="Свернуть" hidden>˅</button>
-        <button id="btn-quit" title="Убрать лошадку (вернётся с новой сессией Claude)">✕</button>
+        <button id="btn-quit" title="Спрятать (вернуть: ⌃⌥Пробел или /horse)">✕</button>
       </div>
       <form id="ask" hidden>
         <div id="target">
@@ -43,15 +43,12 @@
           <span id="no-session" hidden>Откройте Claude Code — лошадка увидит сессию</span>
         </div>
         <div class="pill inputbar">
-          <button id="new-chat" type="button" title="Новый чат в этой сессии">+</button>
+          <button id="new-chat" type="button" title="Вкл — новый чат в Claude; выкл — написать в выбранную сессию">+</button>
           <input id="prompt" type="text" placeholder="Написать в сессию…" autocomplete="off" maxlength="8000" />
           <button id="send" type="submit" title="Отправить" disabled>↑</button>
         </div>
       </form>
-      <div id="card" hidden>
-        <div id="card-title"><span id="dot"></span><span id="card-name"></span></div>
-        <div id="card-step"></div>
-      </div>
+      <div id="cards" hidden></div>
     </div>
   </body>
 </html>
