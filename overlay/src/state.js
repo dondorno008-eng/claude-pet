@@ -82,12 +82,17 @@ export const MAX_CARDS = 3;
 export const PICKUP_MS = 8000;
 
 // a stop for the session's running turn (the mod answers with ack status "stopped")
-// a request from the bar opens a NEW chat in Claude (claude://code/new); the card waits for it
+// a request from the bar starts a NEW chat in the background (`claude --bg`); the card waits for it
 export const NEW_CHAT_MS = 120_000;
 const words = (t) => String(t || "").split(/\s+/).filter(Boolean).join(" ");
 
-// the session that this new-chat request became: started after it, its first prompt = our text
+// the session that this new-chat request became: the id `claude --bg` printed, else the one
+// that started after it with our text as its first prompt
 export function matchNewChat(task, sessions) {
+  if (task.short) {
+    const s = sessions.find((x) => String(x.sessionId || "").startsWith(task.short));
+    if (s) return s;
+  }
   const want = words(task.text).slice(0, 40);
   if (!want) return null;
   const hit = sessions
@@ -113,9 +118,9 @@ export function stopMessage(id, now) {
 export function taskView(task, byId, acks, now) {
   if (task.fresh && !task.sid) {
     const v = (mood, text) => ({ mood, text, sid: null, canStop: false });
-    if (now - task.at > NEW_CHAT_MS) return v("idle", "Новый чат не появился — отправили его в Claude?");
-    if (task.pressed === false) return v("waiting", "Нажмите Enter в Claude — текст уже там");
-    return v("working", "Открываю новый чат в Claude…");
+    if (task.error) return v("failed", `Не запустилось: ${task.error}`);
+    if (now - task.at > NEW_CHAT_MS) return v("idle", "Новый чат не запустился");
+    return v("working", "Запускаем вашу задачу");
   }
   const sid = resolveId(task.sid, byId);
   const s = byId[sid];

@@ -63,16 +63,17 @@ assert.equal(view({ ...task, started: true, stopId: "k1" }, [stopped], { s1: { i
 assert.equal(view({ ...task, started: true, stopId: "k1" }, [run], { s1: { id: "k1", status: "failed", error: "e" } }).mood, "failed");
 assert.deepEqual(stopMessage("k1", 5), { v: 1, id: "k1", stop: true, createdAt: 5 });
 
-// a new chat in Claude: waits for Enter, then becomes the session whose first prompt is ours
-const ask = { sid: null, fresh: true, id: "n1", text: "Найди свежие\nновости про лошадей и собери итоги", at: now - 3000, pressed: false };
-assert.equal(view(ask, [], {}).text, "Нажмите Enter в Claude — текст уже там");
-assert.equal(view({ ...ask, pressed: true }, [], {}).mood, "working");
+// a new background chat: working until its session shows up, by the printed short id or by its text
+const ask = { sid: null, fresh: true, id: "n1", text: "Найди свежие\nновости про лошадей и собери итоги", at: now - 3000, short: null };
+assert.equal(view(ask, [], {}).text, "Запускаем вашу задачу");
+assert.equal(view({ ...ask, error: "Workspace not trusted" }, [], {}).mood, "failed");
 assert.equal(view(ask, [], {}, now + 130_000).mood, "idle");
 assert.equal(view(ask, [], {}).canStop, false);
 const born = { ...run, sessionId: "n9", startedAt: now - 1000, title: "", lastPrompt: "Найди свежие новости про лошадей и собери итоги" };
 const old = { ...born, sessionId: "o1", startedAt: now - 60_000 };
 assert.equal(matchNewChat(ask, [old, born])?.sessionId, "n9");
 assert.equal(matchNewChat(ask, [{ ...born, lastPrompt: "другое" }]), null);
+assert.equal(matchNewChat({ ...ask, short: "3f35592d" }, [born, { ...old, sessionId: "3f35592d-aaaa" }])?.sessionId, "3f35592d-aaaa");
 assert.equal(folderOf("/Users/n/p/.claude/worktrees/x/sub"), "/Users/n/p");
 assert.equal(folderOf("/Users/n/p"), "/Users/n/p");
 

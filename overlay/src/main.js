@@ -20,7 +20,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---------- sprite: the pack's atlas + pet.json (packs/horse, built by tools/build_atlas.py)
 // an animation is a list of [row, col, ms] steps; "loop" = step to go back to, "once" = play over the mood once
-const SCALE = 0.75;
+const SCALE = 0.6375; // 0.75 × 0.85: the horse 15% smaller
 const MOOD_ANIM = { idle: "idle", working: "working", done: "done", failed: "failed", waiting: "waiting" };
 
 let pack = null;
@@ -94,7 +94,7 @@ let walk = { walking: false, dir: 1 };
 let dragging = false;
 
 // the requests the person sent, newest last: { sid, id, text, at, started, stopId }
-// a new chat in Claude starts as { sid: null, fresh: true, pressed } until its session shows up
+// a new background chat starts as { sid: null, fresh: true, short } until its session shows up
 const TASKS_KEY = "horse.tasks";
 let tasks = [];
 try {
@@ -352,18 +352,12 @@ async function summon() {
   await openInput();
 }
 
-// may we press Enter in Claude for the person (Accessibility permission)?
-let autosend = false;
 setNewChat(true);
-invoke("can_autosend").then((v) => {
-  autosend = v;
-  setNewChat(newChatBtn.classList.contains("on"));
-});
 
 function setNewChat(on) {
   newChatBtn.classList.toggle("on", on);
   updateSend();
-  input.placeholder = on ? (autosend ? "Начать новый чат" : "Новый чат — Enter нажмёте в Claude") : "Написать в эту сессию…";
+  input.placeholder = on ? "Начать новый чат" : "Написать в эту сессию…";
 }
 
 // ---------- the 1 s loop: read the shared folder, update mood, cards and picker
@@ -517,9 +511,9 @@ window.addEventListener("blur", () => {
   }
 });
 
-// default: every request is a new chat in Claude's desktop app, in the picked session's project
+// default: every request is a new Claude Code chat in the background, in the picked session's project
 async function sendNewChat(text) {
-  const t = { sid: null, fresh: true, id: crypto.randomUUID(), text, at: Date.now(), started: false, stopId: null, pressed: null };
+  const t = { sid: null, fresh: true, id: crypto.randomUUID(), text, at: Date.now(), started: false, stopId: null, short: null };
   const folder = folderOf(byId[picker.value]?.cwd);
   tasks = tasks.concat(t);
   folded = false;
@@ -528,11 +522,10 @@ async function sendNewChat(text) {
   updateSend();
   await setUi("card");
   try {
-    // Claude comes to the front; it hands focus back only when Enter was pressed for the person
-    t.pressed = await invoke("open_new_chat", { text, folder });
+    // no window opens: `claude --bg` prints the new session's short id
+    t.short = await invoke("start_bg_chat", { text, folder });
   } catch (err) {
-    t.pressed = false;
-    input.title = `Не открылось: ${err}`;
+    t.error = String(err).slice(0, 160);
   }
   saveTasks();
 }

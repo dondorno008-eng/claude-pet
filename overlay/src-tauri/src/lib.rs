@@ -177,51 +177,16 @@ fn submit(session_id: String, body: Value) -> Result<(), String> {
     write_atomic(&b.join("inbox").join(format!("{session_id}.json")), &body.to_string())
 }
 
-/// the bar's request → a new chat in Claude's desktop app; true = Enter was pressed for the person
+/// the bar's request → a new Claude Code chat in the background (`claude --bg`), no window;
+/// Ok(short session id): the card finds sessions/<id…>.json written by the mod
 #[tauri::command]
-async fn open_new_chat(app: tauri::AppHandle, st: St<'_>, text: String, folder: Option<String>) -> Result<bool, String> {
+async fn start_bg_chat(text: String, folder: Option<String>) -> Result<String, String> {
     if text.trim().is_empty() || text.chars().count() > 8000 {
         return Err("bad message".into());
     }
-    let url = newchat::new_chat_url(&text, folder.as_deref());
-    let ok = std::process::Command::new("/usr/bin/open").arg(&url).status().map_err(e2s)?.success();
-    if !ok {
-        return Err("Claude не открылся".into());
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let prev = st.prev_app.load(Ordering::SeqCst);
-        let pressed = tauri::async_runtime::spawn_blocking(move || {
-            newchat::mac::press_enter_when_ready(&text, Duration::from_secs(8))
-        })
-        .await
-        .unwrap_or(false);
-        if pressed && prev > 0 {
-            // Enter went for the person: give them back the window they were in
-            std::thread::sleep(Duration::from_millis(400));
-            let _ = app.run_on_main_thread(move || {
-                use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
-                if let Some(a) = NSRunningApplication::runningApplicationWithProcessIdentifier(prev) {
-                    a.activateWithOptions(NSApplicationActivationOptions::empty());
-                }
-            });
-        }
-        Ok(pressed)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (app, st);
-        Ok(false)
-    }
-}
-
-/// may HorsePet press Enter in Claude (macOS Accessibility permission)?
-#[tauri::command]
-fn can_autosend() -> bool {
-    #[cfg(target_os = "macos")]
-    return newchat::mac::trusted();
-    #[cfg(not(target_os = "macos"))]
-    false
+    let home = PathBuf::from(std::env::var("HOME").map_err(e2s)?);
+    let dir = folder.map(PathBuf::from).filter(|d| d.is_absolute() && d.is_dir()).unwrap_or_else(|| home.clone());
+    tauri::async_runtime::spawn_blocking(move || newchat::start(&home, &dir, &text)).await.map_err(e2s)?
 }
 
 #[tauri::command]
@@ -494,7 +459,7 @@ pub fn run() {
         .manage(shared)
         .invoke_handler(tauri::generate_handler![
             read_state, submit, set_hit_rects, set_dragging, set_mode, focus_input, blur_app, quit, hide_window,
-            show_window, open_new_chat, can_autosend
+            show_window, start_bg_chat
         ])
         .setup(move |app| {
             #[cfg(target_os = "macos")]

@@ -27,7 +27,6 @@ tauri-plugin-global-shortcut = "2"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-app-kit = "0.3"
-objc2-foundation = "0.3"
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
