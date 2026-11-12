@@ -30,6 +30,7 @@ type Pet = {
 }
 
 const POLL_MS = 1000
+const MAX_ANSWER = 6000
 const PULSE_EVERY_TICKS = 15
 const OVERLAY_STALE_MS = 60_000
 const MAX_TEXT = 8000
@@ -286,7 +287,7 @@ export const register: Register = on => {
     if (P.ctx !== null && isMain(e)) {
       const fresh = e.text !== '' && !e.text.startsWith('<bash-')
       const title = P.state.title ?? (fresh ? titleFrom(e.text) : null)
-      void note($, P, { status: 'running' as Status, step: 'Размышление…', title })
+      void note($, P, { status: 'running' as Status, step: 'Размышление…', title, answer: null })
       void launchOverlay($, P)
     }
     return next(e)
@@ -302,7 +303,9 @@ export const register: Register = on => {
           : e.reason === 'aborted'
             ? { status: 'ready' as Status, stoppedAt: now }
             : { status: 'ready' as Status, doneAt: now }
-      void note($, P, { ...patch, step: null })
+      // the answer itself: the horse's card is the only place a background chat shows it
+      const answer = e.answer.trim() === '' ? null : e.answer.trim().slice(0, MAX_ANSWER)
+      void note($, P, { ...patch, step: null, answer })
     }
     return next(e)
   })

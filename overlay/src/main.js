@@ -148,6 +148,7 @@ function cardEl(key) {
       <button class="c-close" type="button" title="Закрыть карточку">×</button>
     </div>
     <div class="card-step"></div>
+    <div class="card-answer" hidden></div>
     <form class="cont" hidden>
       <input type="text" placeholder="Продолжить…" autocomplete="off" maxlength="8000" />
       <button type="submit" title="Отправить в этот чат">↑</button>
@@ -167,6 +168,12 @@ function cardEl(key) {
   return el;
 }
 
+// an answer as plain text: the card draws no markdown
+const plain = (t) => String(t || "").replace(/\*\*|__|`/g, "").replace(/^#+\s*/gm, "").trim();
+
+// a card that shows an answer stays until the person folds or closes it
+const hasAnswer = () => [...cards.querySelectorAll(".card-answer")].some((el) => !el.hidden);
+
 function renderCards(now) {
   const items = cardItems(now);
   const keep = new Set(items.map((i) => i.key));
@@ -182,6 +189,11 @@ function renderCards(now) {
     el.querySelector(".dot").className = `dot ${v.mood}`;
     el.querySelector(".c-stop").hidden = !v.canStop;
     el.querySelector(".c-cont").hidden = !v.sid;
+    // the chat's answer: in the newest card, and in the one being continued
+    const ans = el.querySelector(".card-answer");
+    const text = (i === 0 || contKey === it.key) && s && s.status !== "running" ? plain(s.answer) : "";
+    if (ans.textContent !== text) ans.textContent = text;
+    ans.hidden = !text;
     el.querySelector(".cont").hidden = contKey !== it.key;
   });
   return items;
@@ -395,7 +407,10 @@ async function tick() {
     }
   }
   // a chat that has closed leaves the stack: nothing to continue or stop there
-  const open = tasks.filter((t) => !(t.started && t.sid && !isLive(byId[resolveId(t.sid, byId)], now)));
+  const open = tasks.filter((t) => {
+    const s = t.started && t.sid ? byId[resolveId(t.sid, byId)] : null;
+    return !(t.started && t.sid) || isLive(s, now) || (s && s.answer); // an answer stays readable
+  });
   if (open.length !== tasks.length) {
     tasks.splice(0, tasks.length, ...open);
     changed = true;
@@ -420,15 +435,16 @@ async function tick() {
   if (!busy) folded = false;
   else if (ui === "idle" && !folded) await setUi("card");
   if (ui === "card" && !hovered && contKey === null) {
-    if (!busy && now - cardSince > 12_000) {
+    if (!busy && !hasAnswer() && now - cardSince > 12_000) {
       if (a) dismissed.add(a.key);
       await setUi("idle");
     }
   }
   if (!cards.hidden) {
-    const n = cards.children.length;
+    const n = cards.getBoundingClientRect().height;
     renderCards(now);
-    if (cards.children.length !== n) {
+    await frame();
+    if (cards.getBoundingClientRect().height !== n) {
       await frame();
       sendRects();
     }

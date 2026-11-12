@@ -291,6 +291,20 @@ body {
   cursor: pointer;
 }
 
+.card-answer {
+  margin: 6px 6px 2px 0;
+  padding-top: 6px;
+  border-top: 1px solid #ececf0;
+  max-height: 168px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
 .cont {
   display: flex;
   align-items: center;

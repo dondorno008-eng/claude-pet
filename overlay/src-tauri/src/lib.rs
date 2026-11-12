@@ -22,7 +22,7 @@ use tauri::{Emitter, LogicalSize, Manager, PhysicalPosition, WebviewWindow};
 const W: f64 = 192.0;
 const H: f64 = 208.0;
 const EXP_W: f64 = 460.0;
-const EXP_H: f64 = 420.0;
+const EXP_H: f64 = 640.0;
 const DAY_MS: u64 = 24 * 3600 * 1000;
 const PULSE_MS: u64 = 15_000;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
