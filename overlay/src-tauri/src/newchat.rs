@@ -41,6 +41,22 @@ pub fn start(home: &Path, folder: &Path, text: &str) -> Result<String, String> {
     }
 }
 
+/// the card's ↗: the chat opens in the Claude app, where the whole answer is. A background
+/// chat is stopped first (one writer per session); the app imports it by its id and shows it.
+pub fn open_in_app(home: &Path, sid: &str, background: bool) -> Result<(), String> {
+    if background {
+        if let Some(bin) = claude_bin(home) {
+            let _ = Command::new(bin).args(["stop", &sid[..8.min(sid.len())]]).output();
+        }
+    }
+    let ok = Command::new("/usr/bin/open")
+        .arg(format!("claude://resume?session={sid}"))
+        .status()
+        .map_err(|e| e.to_string())?
+        .success();
+    if ok { Ok(()) } else { Err("Claude не открылся".into()) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

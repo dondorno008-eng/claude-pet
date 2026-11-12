@@ -143,6 +143,7 @@ function cardEl(key) {
   el.innerHTML = `
     <div class="card-head">
       <span class="dot"></span><span class="card-name"></span>
+      <button class="c-open" type="button" title="Открыть чат в Claude">↗</button>
       <button class="c-cont" type="button" title="Продолжить этот чат">↩</button>
       <button class="c-stop" type="button" title="Остановить">■</button>
       <button class="c-close" type="button" title="Закрыть карточку">×</button>
@@ -153,6 +154,9 @@ function cardEl(key) {
       <input type="text" placeholder="Продолжить…" autocomplete="off" maxlength="8000" />
       <button type="submit" title="Отправить в этот чат">↑</button>
     </form>`;
+  el.querySelector(".c-open").addEventListener("click", () => openChat(key));
+  el.querySelector(".card-name").addEventListener("click", () => openChat(key));
+  el.querySelector(".card-answer").addEventListener("dblclick", () => openChat(key));
   el.querySelector(".c-cont").addEventListener("click", () => openCont(key));
   el.querySelector(".c-stop").addEventListener("click", () => stopCard(key));
   el.querySelector(".c-close").addEventListener("click", () => closeCard(key));
@@ -189,6 +193,10 @@ function renderCards(now) {
     el.querySelector(".dot").className = `dot ${v.mood}`;
     el.querySelector(".c-stop").hidden = !v.canStop;
     el.querySelector(".c-cont").hidden = !v.sid;
+    // the whole chat opens in Claude once the turn is over (a running one would be cut short)
+    const canOpen = !!v.sid && !!s && s.status !== "running";
+    el.querySelector(".c-open").hidden = !canOpen;
+    el.querySelector(".card-name").classList.toggle("link", canOpen);
     // the chat's answer: in the newest card, and in the one being continued
     const ans = el.querySelector(".card-answer");
     const text = (i === 0 || contKey === it.key) && s && s.status !== "running" ? plain(s.answer) : "";
@@ -233,13 +241,29 @@ async function continueCard(key, text) {
     cards.querySelector(`[data-key="${CSS.escape(key)}"] .cont input`).title = String(err.message || err);
     return;
   }
-  const t = { sid, id: msg.id, text: it.task.text || msg.text, at: msg.createdAt, started: false, stopId: null };
+  const t = { sid, fresh: it.task.fresh, id: msg.id, text: it.task.text || msg.text, at: msg.createdAt, started: false, stopId: null };
   if (it.attn) dismissed.add(key);
   tasks = tasks.filter((x) => x !== it.task).concat(t);
   saveTasks();
   contKey = null;
   await setUi("card");
   invoke("blur_app");
+}
+
+// the chat moves to the Claude app: its card has nothing left to do here
+async function openChat(key) {
+  const it = itemByKey(key);
+  if (!it) return;
+  const sid = resolveId(it.task.sid, byId);
+  const s = byId[sid];
+  if (!sid || !s || s.status === "running") return;
+  try {
+    await invoke("open_chat", { sessionId: sid, background: !!it.task.fresh });
+  } catch (err) {
+    cards.querySelector(`[data-key="${CSS.escape(key)}"] .card-step`).textContent = String(err.message || err);
+    return;
+  }
+  closeCard(key);
 }
 
 async function stopCard(key) {

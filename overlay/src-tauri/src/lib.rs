@@ -189,6 +189,16 @@ async fn start_bg_chat(text: String, folder: Option<String>) -> Result<String, S
     tauri::async_runtime::spawn_blocking(move || newchat::start(&home, &dir, &text)).await.map_err(e2s)?
 }
 
+/// the card's ↗: show this chat in the Claude app (a background one stops and moves there)
+#[tauri::command]
+async fn open_chat(session_id: String, background: bool) -> Result<(), String> {
+    if !safe_sid(&session_id) {
+        return Err("bad session id".into());
+    }
+    let home = PathBuf::from(std::env::var("HOME").map_err(e2s)?);
+    tauri::async_runtime::spawn_blocking(move || newchat::open_in_app(&home, &session_id, background)).await.map_err(e2s)?
+}
+
 #[tauri::command]
 fn set_hit_rects(st: St, rects: Vec<[f64; 4]>) {
     *st.rects.lock().unwrap() = rects;
@@ -459,7 +469,7 @@ pub fn run() {
         .manage(shared)
         .invoke_handler(tauri::generate_handler![
             read_state, submit, set_hit_rects, set_dragging, set_mode, focus_input, blur_app, quit, hide_window,
-            show_window, start_bg_chat
+            show_window, start_bg_chat, open_chat
         ])
         .setup(move |app| {
             #[cfg(target_os = "macos")]
