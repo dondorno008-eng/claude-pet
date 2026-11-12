@@ -1,0 +1,5 @@
+{
+  "name": "horse-pet",
+  "version": "0.0.1",
+  "description": "Spike S1: writes session state for the desktop pet and submits prompts the pet drops in its inbox."
+}
