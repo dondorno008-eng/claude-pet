@@ -1,4 +1,4 @@
-import { MAX_CARDS, folderOf, inboxMessage, labelOf, liveSessions, matchNewChat, moodOf, petMood, resolveId, stopMessage, taskView } from "./state.js";
+import { MAX_CARDS, folderOf, inboxMessage, isLive, labelOf, liveSessions, matchNewChat, moodOf, petMood, resolveId, stopMessage, taskView } from "./state.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -393,6 +393,12 @@ async function tick() {
       t.started = true;
       changed = true;
     }
+  }
+  // a chat that has closed leaves the stack: nothing to continue or stop there
+  const open = tasks.filter((t) => !(t.started && t.sid && !isLive(byId[resolveId(t.sid, byId)], now)));
+  if (open.length !== tasks.length) {
+    tasks.splice(0, tasks.length, ...open);
+    changed = true;
   }
   if (changed) saveTasks();
   // /horse wrote show.json: a new stamp, or a fresh one when /horse just started us

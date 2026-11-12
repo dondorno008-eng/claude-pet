@@ -28,7 +28,9 @@ body {
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  padding-bottom: 8px;
+  /* the hooves (bottom row of the cell) land on the top edge of #ui at 182px:
+     the horse stands on the bar and the button pill, nothing covers its legs */
+  padding-bottom: 23px;
   box-sizing: border-box;
   pointer-events: none;
 }
