@@ -16,8 +16,8 @@ body {
   display: none !important;
 }
 
-/* the pet box is the same 192×208 in both window modes and stays top-centre,
-   so resizing the window never moves the pet on screen */
+/* the pet box sits top-centre of the one-size 460×640 window; the window is never
+   resized, so the pet never moves unless dragged */
 #stage {
   position: absolute;
   top: 0;

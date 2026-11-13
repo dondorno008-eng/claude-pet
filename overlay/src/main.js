@@ -302,7 +302,6 @@ function updateSend() {
 
 // ---------- UI states: idle (pet only) | pill (hover) | input | card
 let ui = "idle";
-let expanded = false;
 let hovered = false;
 let cardSince = 0;
 let folded = false; // the person folded the cards while a task works: do not pop them back
@@ -320,11 +319,6 @@ function sendRects() {
 
 async function setUi(next) {
   ui = next;
-  const wantExpanded = next !== "idle";
-  if (wantExpanded !== expanded) {
-    expanded = wantExpanded;
-    await invoke("set_mode", { expanded });
-  }
   const now = Date.now();
   // the buttons show only under the mouse
   pill.hidden = !hovered || next === "idle" || next === "input";

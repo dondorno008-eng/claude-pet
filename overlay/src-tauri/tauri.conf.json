@@ -15,8 +15,8 @@
       {
         "label": "main",
         "title": "Лошадка",
-        "width": 192,
-        "height": 208,
+        "width": 460,
+        "height": 640,
         "transparent": true,
         "decorations": false,
         "alwaysOnTop": true,
