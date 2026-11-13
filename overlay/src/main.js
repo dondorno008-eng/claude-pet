@@ -1,4 +1,4 @@
-import { MAX_CARDS, folderOf, inboxMessage, isLive, labelOf, liveSessions, matchNewChat, resolveId, stopMessage, taskView } from "./state.js";
+import { HINT_MS, MAX_CARDS, folderOf, inboxMessage, isLive, labelOf, liveSessions, matchNewChat, resolveId, stopMessage, taskView } from "./state.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -513,6 +513,10 @@ async function tick() {
         t.sid = s.sessionId;
         t.started = true;
         changed = true;
+      } else if (t.short && !t.hint && now - t.at > HINT_MS && now - (t.hintAt || 0) > HINT_MS / 2) {
+        // still silent: ask its screen why (not signed in, first run, trust…)
+        t.hintAt = now;
+        invoke("bg_chat_hint", { short: t.short }).then((h) => { if (h) { t.hint = h; saveTasks(); } }, () => {});
       }
       continue;
     }

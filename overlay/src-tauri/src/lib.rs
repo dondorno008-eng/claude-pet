@@ -189,6 +189,16 @@ async fn start_bg_chat(text: String, folder: Option<String>) -> Result<String, S
     tauri::async_runtime::spawn_blocking(move || newchat::start(&home, &dir, &text)).await.map_err(e2s)?
 }
 
+/// a new background chat that has not reported yet: what its screen is stuck on (sign-in, setup…)
+#[tauri::command]
+async fn bg_chat_hint(short: String) -> Result<Option<String>, String> {
+    if short.len() < 6 || short.len() > 36 || !short.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+        return Err("bad session id".into());
+    }
+    let home = PathBuf::from(std::env::var("HOME").map_err(e2s)?);
+    tauri::async_runtime::spawn_blocking(move || newchat::why_silent(&home, &short)).await.map_err(e2s)
+}
+
 /// the card's ↗: show this chat in the Claude app (a background one stops and moves there)
 #[tauri::command]
 async fn open_chat(session_id: String, background: bool) -> Result<(), String> {
@@ -405,7 +415,7 @@ pub fn run() {
         .manage(shared)
         .invoke_handler(tauri::generate_handler![
             read_state, submit, set_hit_rects, set_dragging, focus_input, blur_app, quit, hide_window,
-            show_window, start_bg_chat, open_chat
+            show_window, start_bg_chat, bg_chat_hint, open_chat
         ])
         .setup(move |app| {
             #[cfg(target_os = "macos")]
