@@ -17,12 +17,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 mod newchat;
 
 use serde_json::{Map, Value, json};
-use tauri::{Emitter, LogicalSize, Manager, PhysicalPosition, WebviewWindow};
+use tauri::{Emitter, Manager, PhysicalPosition, WebviewWindow};
 
-const W: f64 = 192.0;
-const H: f64 = 208.0;
-const EXP_W: f64 = 460.0;
-const EXP_H: f64 = 640.0;
+/// The window has one size for good: pet on top, pill and cards under it, the rest is
+/// click-through. Resizing on hover took two steps (size, then position), and macOS drew
+/// the frame between them: the pet flashed 134 px to the side (12.11.2026).
+const WIN_W: f64 = 460.0;
+const WIN_H: f64 = 640.0;
 const DAY_MS: u64 = 24 * 3600 * 1000;
 const PULSE_MS: u64 = 15_000;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -218,29 +219,6 @@ fn set_dragging(window: WebviewWindow, st: St, dragging: bool) {
     st.dragging.store(dragging, Ordering::SeqCst);
 }
 
-/// compact = 192×208 (pet only), expanded = 460×300 (pet + pill + card/input).
-/// Keeps the top edge and the horizontal centre, so the pet does not move on screen.
-#[tauri::command]
-fn set_mode(window: WebviewWindow, expanded: bool) -> Result<(), String> {
-    let (w, h) = if expanded { (EXP_W, EXP_H) } else { (W, H) };
-    let scale = window.scale_factor().map_err(e2s)?;
-    let pos = window.outer_position().map_err(e2s)?;
-    let cur = window.outer_size().map_err(e2s)?;
-    let (nw, nh) = ((w * scale) as i32, (h * scale) as i32);
-    let mut nx = pos.x + (cur.width as i32 - nw) / 2;
-    let mut ny = pos.y;
-    if let Ok(Some(m)) = window.current_monitor() {
-        let a = m.work_area();
-        let (l, t) = (a.position.x, a.position.y);
-        let (r, b) = (l + a.size.width as i32, t + a.size.height as i32);
-        nx = nx.clamp(l, (r - nw).max(l));
-        ny = ny.clamp(t, (b - nh).max(t));
-    }
-    window.set_size(LogicalSize::new(w, h)).map_err(e2s)?;
-    window.set_position(PhysicalPosition::new(nx, ny)).map_err(e2s)?;
-    Ok(())
-}
-
 #[tauri::command]
 fn focus_input(window: WebviewWindow, st: St) -> Result<(), String> {
     remember_front(&st);
@@ -417,7 +395,7 @@ pub fn run() {
         )
         .manage(shared)
         .invoke_handler(tauri::generate_handler![
-            read_state, submit, set_hit_rects, set_dragging, set_mode, focus_input, blur_app, quit, hide_window,
+            read_state, submit, set_hit_rects, set_dragging, focus_input, blur_app, quit, hide_window,
             show_window, start_bg_chat, open_chat
         ])
         .setup(move |app| {
@@ -429,13 +407,12 @@ pub fn run() {
             // start click-through; the ticker turns it off over visible elements
             win.set_ignore_cursor_events(true)?;
             ticker_state.ignoring.store(true, Ordering::SeqCst);
-            // walking lane: low enough to look "on the floor", high enough that
-            // the expanded 460×300 frame still fits without moving the pet
+            // bottom centre of the screen, with room under the pet for the cards
             if let Ok(Some(m)) = win.primary_monitor() {
                 let a = m.work_area();
                 let s = m.scale_factor();
-                let y = a.position.y + a.size.height as i32 - (EXP_H * s) as i32;
-                let x = a.position.x + (a.size.width as i32 - (W * s) as i32) / 2;
+                let y = a.position.y + a.size.height as i32 - (WIN_H * s) as i32;
+                let x = a.position.x + (a.size.width as i32 - (WIN_W * s) as i32) / 2;
                 win.set_position(PhysicalPosition::new(x, y))?;
             }
             spawn_pulse();
@@ -518,6 +495,18 @@ mod tests {
         assert!(!b.join("inbox/live.json").exists(), "acked inbox is dropped");
         assert!(b.join("sessions/half.json").exists(), "half-written file is left alone");
         let _ = fs::remove_dir_all(&b);
+    }
+
+    /// 12.11.2026: hovering resized the window in two steps and the pet flashed to the side.
+    /// The window is created at its final size, and no code path resizes it.
+    #[test]
+    fn hover_never_resizes_the_window() {
+        let conf: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let w = &conf["app"]["windows"][0];
+        assert_eq!((w["width"].as_f64(), w["height"].as_f64()), (Some(WIN_W), Some(WIN_H)));
+        let resize = concat!("set_", "size(");
+        assert!(!include_str!("lib.rs").contains(resize), "lib.rs resizes the window");
+        assert!(!include_str!("../../src/main.js").contains("set_mode"), "main.js asks for a resize");
     }
 
     #[test]
