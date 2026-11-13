@@ -1,6 +1,6 @@
 {
   "name": "horse-pet",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "A desktop horse for Claude Code: shows what each session is doing and lets you send a prompt to it from the horse.",
   "license": "MIT"
 }

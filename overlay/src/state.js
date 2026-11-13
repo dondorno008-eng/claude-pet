@@ -84,6 +84,8 @@ export const PICKUP_MS = 8000;
 // a stop for the session's running turn (the mod answers with ack status "stopped")
 // a request from the bar starts a NEW chat in the background (`claude --bg`); the card waits for it
 export const NEW_CHAT_MS = 120_000;
+// a new chat silent this long: the window asks `claude logs` what it is stuck on → task.hint
+export const HINT_MS = 15_000;
 const words = (t) => String(t || "").split(/\s+/).filter(Boolean).join(" ");
 
 // the session that this new-chat request became: the id `claude --bg` printed, else the one
@@ -119,7 +121,8 @@ export function taskView(task, byId, acks, now) {
   if (task.fresh && !task.sid) {
     const v = (mood, text) => ({ mood, text, sid: null, canStop: false });
     if (task.error) return v("failed", `Не запустилось: ${task.error}`);
-    if (now - task.at > NEW_CHAT_MS) return v("idle", "Новый чат не запустился");
+    if (task.hint) return v("failed", task.hint);
+    if (now - task.at > NEW_CHAT_MS) return v("idle", task.short ? `Новый чат молчит — в Терминале: claude logs ${task.short}` : "Новый чат не запустился");
     return v("working", "Запускаем вашу задачу");
   }
   const sid = resolveId(task.sid, byId);

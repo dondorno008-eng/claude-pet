@@ -68,6 +68,7 @@ const ask = { sid: null, fresh: true, id: "n1", text: "Найди свежие\n
 assert.equal(view(ask, [], {}).text, "Запускаем вашу задачу");
 assert.equal(view({ ...ask, error: "Workspace not trusted" }, [], {}).mood, "failed");
 assert.equal(view(ask, [], {}, now + 130_000).mood, "idle");
+assert.equal(view({ ...ask, short: "3f35592d", hint: "Claude Code в Терминале не вошёл в аккаунт" }, [], {}).mood, "failed");
 assert.equal(view(ask, [], {}).canStop, false);
 const born = { ...run, sessionId: "n9", startedAt: now - 1000, title: "", lastPrompt: "Найди свежие новости про лошадей и собери итоги" };
 const old = { ...born, sessionId: "o1", startedAt: now - 60_000 };

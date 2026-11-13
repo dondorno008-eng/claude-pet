@@ -72,6 +72,16 @@ say "Ставлю мод в Claude Code…"
 # a repeat run is an update: the installed mod moves to the new version
 "$CLAUDE" plugin update "$PLUGIN@$MARKET" >/dev/null 2>&1 || true
 
+# new chats from the horse run as `claude --bg`: the terminal Claude Code keeps its own
+# sign-in, apart from the Claude app, and a background chat cannot show the sign-in screen
+if "$CLAUDE" auth status 2>/dev/null | grep -q '"loggedIn": *false'; then
+  say "Лошадка запускает чаты через Claude Code в терминале, а он ещё не вошёл в аккаунт."
+  say "Сейчас откроется браузер — войдите тем же аккаунтом, что и в приложении Claude."
+  if [ -r /dev/tty ]; then "$CLAUDE" auth login </dev/tty || true; fi
+  "$CLAUDE" auth status 2>/dev/null | grep -q '"loggedIn": *false' \
+    && say "Вход не завершён. Выполните в «Терминале»: claude auth login — иначе новые чаты из лошадки не запустятся."
+fi
+
 open -g "$APP_DIR/$APP_NAME"
 say "Готово! Лошадка уже на экране."
 say "Откройте новый чат в Claude Code (или перезапустите приложение Claude) — она начнёт следить за сессией."
