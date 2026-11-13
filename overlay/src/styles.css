@@ -111,7 +111,8 @@ body {
   cursor: pointer;
 }
 
-.pill button:hover {
+.pill button:hover,
+.pill button.hot {
   background: #f0f0f2;
 }
 
@@ -138,7 +139,8 @@ body {
 
 /* recording: Claude's orange, a ring that breathes with the voice */
 .mic.rec,
-.mic.rec:hover {
+.mic.rec:hover,
+.mic.rec.hot {
   background: #d97757;
   color: #fff;
   box-shadow: 0 0 0 calc(2px + var(--lvl) * 7px) rgba(217, 119, 87, 0.28);
@@ -183,7 +185,8 @@ body {
   background: #0a84ff;
 }
 
-#send.ready:hover {
+#send.ready:hover,
+#send.ready.hot {
   background: #0070e0;
 }
 
@@ -234,7 +237,9 @@ body {
 }
 
 .card-head button:hover,
-.cont button:hover {
+.cont button:hover,
+.card-head button.hot,
+.cont button.hot {
   background: #f0f0f2;
   color: #1c1c1e;
 }
@@ -243,7 +248,8 @@ body {
   cursor: pointer;
 }
 
-.card-name.link:hover {
+.card-name.link:hover,
+.card-name.link.hot {
   text-decoration: underline;
 }
 

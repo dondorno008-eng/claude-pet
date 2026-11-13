@@ -552,6 +552,18 @@ listen("hover", async (e) => {
   }
 });
 
+// the window is not key while the cursor just passes, so CSS :hover never fires;
+// Rust sends the cursor position and the button under it gets .hot
+let hot = null;
+listen("cursor", (e) => {
+  const p = e.payload;
+  const el = p ? document.elementFromPoint(p.x, p.y)?.closest("button, .card-name.link") ?? null : null;
+  if (el === hot) return;
+  hot?.classList.remove("hot");
+  hot = el;
+  hot?.classList.add("hot");
+});
+
 listen("walk", (e) => {
   walk = e.payload;
   refreshAnim();
