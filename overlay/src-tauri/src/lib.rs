@@ -3,7 +3,7 @@
 // except the visible elements (the cursor is polled and hit-tested here, and
 // ignore-cursor-events is toggled per element). Talks to the Claude Code mod
 // through files only, see docs/protocol.md:
-//   reads  ~/.claude-pet/sessions/*.json, acks/*.json
+//   reads  ~/.claude-pet/sessions/*.json, acks/*.json, show.json (/horse)
 //   writes ~/.claude-pet/inbox/<sessionId>.json (atomic), overlay.json (pulse)
 //   drops  inbox files once acked, and session files dead for over a day
 use std::fs::{self, DirBuilder, OpenOptions};
@@ -14,22 +14,25 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+mod newchat;
+
 use serde_json::{Map, Value, json};
 use tauri::{Emitter, LogicalSize, Manager, PhysicalPosition, WebviewWindow};
 
 const W: f64 = 192.0;
 const H: f64 = 208.0;
 const EXP_W: f64 = 460.0;
-const EXP_H: f64 = 300.0;
+const EXP_H: f64 = 640.0;
 const DAY_MS: u64 = 24 * 3600 * 1000;
 const PULSE_MS: u64 = 15_000;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Default)]
 struct Shared {
-    paused: AtomicBool,
     dragging: AtomicBool,
     ignoring: AtomicBool,
+    /// hidden by ✕ or the hotkey: no walking, no hit-testing
+    hidden: AtomicBool,
     /// pid of the app that was frontmost before we took focus (macOS)
     prev_app: AtomicI32,
     /// (cursor x, cursor y, window x, window y) in physical px at drag start
@@ -139,7 +142,20 @@ pub fn scan(base: &Path, now: u64) -> Value {
             }
         }
     }
-    json!({ "sessions": sessions, "acks": acks })
+    let show_at = read_json(&base.join("show.json")).map(|v| num(&v, "at")).unwrap_or(0);
+    json!({ "sessions": sessions, "acks": acks, "showAt": show_at })
+}
+
+/// an inbox message: a prompt (1…8000 chars) or a stop, always with an id
+pub fn message_ok(body: &Value) -> bool {
+    if id_of(body).is_none() {
+        return false;
+    }
+    if body.get("stop").and_then(Value::as_bool) == Some(true) {
+        return true;
+    }
+    let text = body.get("text").and_then(Value::as_str).unwrap_or("");
+    !text.trim().is_empty() && text.chars().count() <= 8000
 }
 
 #[tauri::command]
@@ -152,13 +168,34 @@ fn submit(session_id: String, body: Value) -> Result<(), String> {
     if !safe_sid(&session_id) {
         return Err("bad session id".into());
     }
-    let text = body.get("text").and_then(Value::as_str).unwrap_or("");
-    if id_of(&body).is_none() || text.trim().is_empty() || text.chars().count() > 8000 {
+    if !message_ok(&body) {
         return Err("bad message".into());
     }
     let b = base();
     ensure_dirs(&b);
     write_atomic(&b.join("inbox").join(format!("{session_id}.json")), &body.to_string())
+}
+
+/// the bar's request → a new Claude Code chat in the background (`claude --bg`), no window;
+/// Ok(short session id): the card finds sessions/<id…>.json written by the mod
+#[tauri::command]
+async fn start_bg_chat(text: String, folder: Option<String>) -> Result<String, String> {
+    if text.trim().is_empty() || text.chars().count() > 8000 {
+        return Err("bad message".into());
+    }
+    let home = PathBuf::from(std::env::var("HOME").map_err(e2s)?);
+    let dir = folder.map(PathBuf::from).filter(|d| d.is_absolute() && d.is_dir()).unwrap_or_else(|| home.clone());
+    tauri::async_runtime::spawn_blocking(move || newchat::start(&home, &dir, &text)).await.map_err(e2s)?
+}
+
+/// the card's ↗: show this chat in the Claude app (a background one stops and moves there)
+#[tauri::command]
+async fn open_chat(session_id: String, background: bool) -> Result<(), String> {
+    if !safe_sid(&session_id) {
+        return Err("bad session id".into());
+    }
+    let home = PathBuf::from(std::env::var("HOME").map_err(e2s)?);
+    tauri::async_runtime::spawn_blocking(move || newchat::open_in_app(&home, &session_id, background)).await.map_err(e2s)?
 }
 
 #[tauri::command]
@@ -184,9 +221,7 @@ fn set_dragging(window: WebviewWindow, st: St, dragging: bool) {
 /// compact = 192×208 (pet only), expanded = 460×300 (pet + pill + card/input).
 /// Keeps the top edge and the horizontal centre, so the pet does not move on screen.
 #[tauri::command]
-fn set_mode(window: WebviewWindow, st: St, expanded: bool) -> Result<(), String> {
-    st.paused.store(expanded, Ordering::SeqCst);
-    std::thread::sleep(Duration::from_millis(40)); // let the walker finish its tick
+fn set_mode(window: WebviewWindow, expanded: bool) -> Result<(), String> {
     let (w, h) = if expanded { (EXP_W, EXP_H) } else { (W, H) };
     let scale = window.scale_factor().map_err(e2s)?;
     let pos = window.outer_position().map_err(e2s)?;
@@ -216,6 +251,27 @@ fn focus_input(window: WebviewWindow, st: St) -> Result<(), String> {
 fn quit(app: tauri::AppHandle) {
     app.exit(0);
 }
+
+/// ✕ and the hotkey hide the horse; the hotkey and /horse bring it back
+#[tauri::command]
+fn hide_window(window: WebviewWindow, st: St) -> Result<(), String> {
+    st.hidden.store(true, Ordering::SeqCst);
+    window.hide().map_err(e2s)
+}
+
+#[tauri::command]
+fn show_window(window: WebviewWindow, st: St) -> Result<(), String> {
+    reveal(&window, &st);
+    Ok(())
+}
+
+fn reveal(window: &WebviewWindow, sh: &Shared) {
+    sh.hidden.store(false, Ordering::SeqCst);
+    let _ = window.show();
+}
+
+/// ⌃⌥Space: hidden → shown with the input open; shown → the window decides (input ↔ pet)
+const HOTKEY: &str = "ctrl+alt+space";
 
 /// remember which app owns the keyboard right now (if it is not us)
 fn remember_front(sh: &Shared) {
@@ -261,31 +317,17 @@ fn mac_window_tweaks(win: &WebviewWindow) {
     ns.setLevel(25);
 }
 
-/// tiny xorshift: walk lengths and pauses need no crypto
-struct Rng(u64);
-impl Rng {
-    fn range(&mut self, lo: u64, hi: u64) -> u64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        lo + self.0 % (hi - lo).max(1)
-    }
-}
-
-/// Walk episodes: rest 6–20 s, gallop 2.5–6 s. Resting, the loop wakes at 10 Hz
-/// only to hit-test the cursor; galloping it moves the window at 30 Hz.
+/// The window moves only when the person drags it: no walks of its own (a pet that moves
+/// under a still cursor reads as a hover). Resting, the loop wakes at 10 Hz to hit-test the cursor.
 fn spawn_ticker(win: WebviewWindow, sh: Arc<Shared>) {
     std::thread::spawn(move || {
-        let mut rng = Rng(now_ms() | 1);
         let mut dir: i32 = 1;
-        let mut walking = false;
-        let mut until = now_ms() + rng.range(3000, 8000);
         let mut drag_last_x: Option<i32> = None;
         let emit_walk = |walking: bool, dir: i32| {
             let _ = win.emit("walk", json!({ "walking": walking, "dir": dir }));
         };
         loop {
-            let busy = sh.dragging.load(Ordering::SeqCst) || (walking && !sh.paused.load(Ordering::SeqCst));
+            let busy = sh.dragging.load(Ordering::SeqCst);
             std::thread::sleep(Duration::from_millis(if busy { 33 } else { 100 }));
             // read again after the sleep: a drag may have started meanwhile
             if sh.dragging.load(Ordering::SeqCst) {
@@ -297,7 +339,7 @@ fn spawn_ticker(win: WebviewWindow, sh: Arc<Shared>) {
                     let d = drag_last_x.map(|l| (nx - l).signum()).unwrap_or(0);
                     if d != 0 && d != dir {
                         dir = d;
-                        emit_walk(walking, dir);
+                        emit_walk(true, dir);
                     }
                     drag_last_x = Some(nx);
                     let _ = win.set_position(PhysicalPosition::new(nx, ny));
@@ -305,6 +347,9 @@ fn spawn_ticker(win: WebviewWindow, sh: Arc<Shared>) {
                 continue;
             }
             drag_last_x = None;
+            if sh.hidden.load(Ordering::SeqCst) {
+                continue;
+            }
             if let (Ok(c), Ok(p), Ok(scale)) = (win.cursor_position(), win.outer_position(), win.scale_factor()) {
                 let lx = (c.x - p.x as f64) / scale;
                 let ly = (c.y - p.y as f64) / scale;
@@ -323,40 +368,6 @@ fn spawn_ticker(win: WebviewWindow, sh: Arc<Shared>) {
                     let _ = win.emit("hover", inside);
                 }
             }
-            let t = now_ms();
-            if sh.paused.load(Ordering::SeqCst) {
-                if walking {
-                    walking = false;
-                    emit_walk(walking, dir);
-                }
-                until = t + rng.range(6000, 20000);
-                continue;
-            }
-            if t >= until {
-                walking = !walking;
-                until = t + if walking { rng.range(2500, 6000) } else { rng.range(6000, 20000) };
-                if walking && rng.range(0, 3) == 0 {
-                    dir = -dir;
-                }
-                emit_walk(walking, dir);
-            }
-            if !walking {
-                continue;
-            }
-            let Ok(Some(mon)) = win.current_monitor() else { continue };
-            let Ok(p) = win.outer_position() else { continue };
-            let Ok(sz) = win.outer_size() else { continue };
-            let area = mon.work_area();
-            let step = (2.0 * mon.scale_factor()) as i32;
-            let left = area.position.x;
-            let right = area.position.x + area.size.width as i32 - sz.width as i32;
-            let mut nx = p.x + dir * step.max(1);
-            if nx >= right || nx <= left {
-                nx = nx.clamp(left, right.max(left));
-                dir = -dir;
-                emit_walk(walking, dir);
-            }
-            let _ = win.set_position(PhysicalPosition::new(nx, p.y));
         }
     });
 }
@@ -382,12 +393,32 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             // the mod launched us again: say hello instead of opening a second horse
             if let Some(w) = app.get_webview_window("main") {
+                reveal(&w, &app.state::<Arc<Shared>>());
                 let _ = w.emit("second-instance", ());
             }
         }))
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_shortcuts([HOTKEY])
+                .expect("hotkey")
+                .with_handler(|app, _shortcut, event| {
+                    use tauri_plugin_global_shortcut::ShortcutState;
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    let Some(w) = app.get_webview_window("main") else { return };
+                    let sh = app.state::<Arc<Shared>>();
+                    let was_hidden = sh.hidden.load(Ordering::SeqCst) || !w.is_visible().unwrap_or(true);
+                    remember_front(&sh);
+                    reveal(&w, &sh);
+                    let _ = w.emit("hotkey", was_hidden);
+                })
+                .build(),
+        )
         .manage(shared)
         .invoke_handler(tauri::generate_handler![
-            read_state, submit, set_hit_rects, set_dragging, set_mode, focus_input, blur_app, quit
+            read_state, submit, set_hit_rects, set_dragging, set_mode, focus_input, blur_app, quit, hide_window,
+            show_window, start_bg_chat, open_chat
         ])
         .setup(move |app| {
             #[cfg(target_os = "macos")]
@@ -435,6 +466,16 @@ mod tests {
     }
 
     #[test]
+    fn a_message_is_a_prompt_or_a_stop() {
+        assert!(message_ok(&json!({ "id": "m", "text": "hi" })));
+        assert!(message_ok(&json!({ "id": "m", "stop": true })));
+        assert!(!message_ok(&json!({ "id": "m", "text": "  " })));
+        assert!(!message_ok(&json!({ "id": "m", "stop": false })));
+        assert!(!message_ok(&json!({ "stop": true })));
+        assert!(!message_ok(&json!({ "id": "m", "text": "x".repeat(8001) })));
+    }
+
+    #[test]
     fn a_session_is_dead_after_a_day_without_writes() {
         let now = 10 * DAY_MS;
         assert!(!is_dead(&json!({ "updatedAt": now - 1000, "pulseAt": 0 }), now));
@@ -464,11 +505,13 @@ mod tests {
         put("acks/live.json", json!({ "id": "m1", "status": "started" }));
         put("inbox/live.json", json!({ "id": "m1", "text": "hi" }));
         fs::write(b.join("sessions/half.json"), "{\"sessionId\":").unwrap();
+        put("show.json", json!({ "v": 1, "at": 1234 }));
 
         let st = scan(&b, now);
         let ids: Vec<_> = st["sessions"].as_array().unwrap().iter().map(|s| s["sessionId"].clone()).collect();
         assert_eq!(ids, vec![json!("live")]);
         assert_eq!(st["acks"]["live"]["id"], "m1");
+        assert_eq!(st["showAt"], 1234);
         assert!(st["acks"].get("old").is_none());
         assert!(!b.join("sessions/old.json").exists());
         assert!(!b.join("acks/old.json").exists());

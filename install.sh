@@ -65,9 +65,12 @@ xattr -dr com.apple.quarantine "$APP_DIR/$APP_NAME" 2>/dev/null || true
 codesign --force --deep --sign - "$APP_DIR/$APP_NAME" >/dev/null 2>&1 || true
 
 say "Ставлю мод в Claude Code…"
-"$CLAUDE" plugin marketplace add "$REPO" >/dev/null 2>&1 || "$CLAUDE" plugin marketplace update "$MARKET" >/dev/null 2>&1 || true
+"$CLAUDE" plugin marketplace add "$REPO" >/dev/null 2>&1 || true
+"$CLAUDE" plugin marketplace update "$MARKET" >/dev/null 2>&1 || true
 "$CLAUDE" plugin install "$PLUGIN@$MARKET" --scope user \
   || die "мод не поставился. Попробуйте ещё раз или напишите автору."
+# a repeat run is an update: the installed mod moves to the new version
+"$CLAUDE" plugin update "$PLUGIN@$MARKET" >/dev/null 2>&1 || true
 
 open -g "$APP_DIR/$APP_NAME"
 say "Готово! Лошадка уже на экране."

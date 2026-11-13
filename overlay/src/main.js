@@ -1,4 +1,4 @@
-import { MOOD_TEXT, cardSession, inboxMessage, labelOf, liveSessions, moodOf, petMood, resolveId } from "./state.js";
+import { MAX_CARDS, folderOf, inboxMessage, isLive, labelOf, liveSessions, matchNewChat, resolveId, stopMessage, taskView } from "./state.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -12,22 +12,21 @@ const input = $("prompt");
 const send = $("send");
 const picker = $("session");
 const newChatBtn = $("new-chat");
-const card = $("card");
+const cards = $("cards");
 const collapseBtn = $("btn-collapse");
 
 const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---------- sprite: the pack's atlas + pet.json (packs/horse, built by tools/build_atlas.py)
-// an animation is a list of [row, col, ms] steps; "loop" = step to go back to, "once" = play over the mood once
-const SCALE = 0.75;
-const MOOD_ANIM = { idle: "idle", working: "working", done: "done", failed: "failed", waiting: "waiting" };
+// an animation is a list of [row, col, ms] steps; "loop" = step to go back to, "once" = play over the pose once
+const SCALE = 0.6375; // 0.75 × 0.85: the horse 15% smaller
 
 let pack = null;
 let anim = null;
 let stepNo = 0;
 let timer = null;
-let oneShot = null; // an animation that plays once over the mood (hello on a second launch)
+let oneShot = null; // an animation that plays once over the pose (hello on a second launch)
 
 function show() {
   const [row, col] = pack.animations[anim].steps[stepNo];
@@ -88,61 +87,198 @@ fetch("pack/pet.json")
 // ---------- what the sessions are doing (files of docs/protocol.md, via Rust)
 let sessions = [];
 let acks = {};
-let mood = "idle";
+let byId = {};
 let walk = { walking: false, dir: 1 };
 let dragging = false;
 
-// the last prompt the person sent: { sid, id, at }
-let lastSent = null;
-// auto-shown cards the person closed: key -> true
-const dismissed = new Set();
+// the requests the person sent, newest last: { sid, id, text, at, started, stopId }
+// a new background chat starts as { sid: null, fresh: true, short } until its session shows up
+const TASKS_KEY = "horse.tasks";
+let tasks = [];
+try {
+  tasks = JSON.parse(localStorage.getItem(TASKS_KEY) || "[]").filter((t) => t && (t.sid || t.fresh));
+} catch {
+  tasks = [];
+}
+const saveTasks = () => localStorage.setItem(TASKS_KEY, JSON.stringify(tasks.slice(-10)));
+// the card whose ↩ field is open: its key
+let contKey = null;
 
+// four poses, set by the person alone (other sessions never move the horse):
+// rest → lies down and stays lying ("done": stand → kneel → lie); dragged → gallops;
+// clicked (input open) → stands ("idle" is the pack's standing pose)
 function refreshAnim() {
+  if (dragging) return play(walk.dir < 0 ? "running-left" : "running-right");
   if (oneShot) return play(oneShot);
-  if (dragging || walk.walking) return play(walk.dir < 0 ? "running-left" : "running-right");
-  play(MOOD_ANIM[mood]);
+  play(ui === "input" ? "idle" : "done");
 }
 
-// a session that wants the person: waiting > failed > done
-function attention(now) {
-  for (const m of ["waiting", "failed", "done"]) {
-    const s = liveSessions(sessions, now).find((x) => moodOf(x, now) === m);
-    if (s) return { s, key: `${s.sessionId}:${m}:${s.doneAt || s.updatedAt}` };
-  }
-  return null;
+// what the stack under the horse shows: the last few requests the person sent from the horse
+function cardItems() {
+  return tasks.slice(-MAX_CARDS).reverse().map((t) => ({ key: t.id || t.sid, task: t }));
 }
 
-function stepLine(s, now) {
-  const byId = Object.fromEntries(sessions.map((x) => [x.sessionId, x]));
-  if (lastSent && resolveId(lastSent.sid, byId) === s.sessionId) {
-    const ack = acks[s.sessionId];
-    if (!ack || ack.id !== lastSent.id) {
-      return now - lastSent.at > 8000 ? "Claude пока не забрал промпт — сессия открыта?" : "Отправляю…";
-    }
-    if (ack.status === "queued") return "В очереди — Claude закончит текущий ход";
-    if (ack.status === "failed") return `Не отправилось: ${ack.error || "ошибка"}`;
-  }
-  return s.step || MOOD_TEXT[moodOf(s, now)] || "Свободна";
+function cardEl(key) {
+  let el = cards.querySelector(`[data-key="${CSS.escape(key)}"]`);
+  if (el) return el;
+  el = document.createElement("div");
+  el.className = "card";
+  el.dataset.key = key;
+  el.innerHTML = `
+    <div class="card-head">
+      <span class="dot"></span><span class="card-name"></span>
+      <button class="c-open" type="button" title="Открыть чат в Claude">↗</button>
+      <button class="c-cont" type="button" title="Продолжить этот чат">↩</button>
+      <button class="c-stop" type="button" title="Остановить">■</button>
+      <button class="c-close" type="button" title="Закрыть карточку">×</button>
+    </div>
+    <div class="card-step"></div>
+    <div class="card-answer" hidden></div>
+    <form class="cont" hidden>
+      <input type="text" placeholder="Продолжить…" autocomplete="off" maxlength="8000" />
+      <button type="submit" title="Отправить в этот чат">↑</button>
+    </form>`;
+  el.querySelector(".c-open").addEventListener("click", () => openChat(key));
+  el.querySelector(".card-name").addEventListener("click", () => openChat(key));
+  el.querySelector(".card-answer").addEventListener("dblclick", () => openChat(key));
+  el.querySelector(".c-cont").addEventListener("click", () => openCont(key));
+  el.querySelector(".c-stop").addEventListener("click", () => stopCard(key));
+  el.querySelector(".c-close").addEventListener("click", () => closeCard(key));
+  el.querySelector(".card-step").addEventListener("click", () => openCont(key));
+  const f = el.querySelector(".cont");
+  f.addEventListener("submit", (e) => {
+    e.preventDefault();
+    continueCard(key, f.querySelector("input").value);
+  });
+  f.querySelector("input").addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeCont();
+  });
+  return el;
 }
 
-function renderCard(now) {
-  const a = attention(now);
-  const s = (autoCard && a?.s) || cardSession(sessions, lastSent?.sid, now);
-  if (!s) {
-    $("card-name").textContent = "Нет открытых сессий";
-    $("card-step").textContent = "Лошадка ждёт, пока вы откроете Claude Code";
-    $("dot").className = "";
+// an answer as plain text: the card draws no markdown
+const plain = (t) => String(t || "").replace(/\*\*|__|`/g, "").replace(/^#+\s*/gm, "").trim();
+
+// a card that shows an answer stays until the person folds or closes it
+const hasAnswer = () => [...cards.querySelectorAll(".card-answer")].some((el) => !el.hidden);
+
+function renderCards(now) {
+  const items = cardItems(now);
+  const keep = new Set(items.map((i) => i.key));
+  for (const el of [...cards.children]) if (!keep.has(el.dataset.key)) el.remove();
+  if (contKey && !keep.has(contKey)) contKey = null;
+  items.forEach((it, i) => {
+    const el = cardEl(it.key);
+    if (cards.children[i] !== el) cards.insertBefore(el, cards.children[i] || null);
+    const v = taskView(it.task, byId, acks, now);
+    const s = byId[v.sid];
+    el.querySelector(".card-name").textContent = it.task.text || (s ? labelOf(s) : "Чат");
+    el.querySelector(".card-step").textContent = v.text;
+    el.querySelector(".dot").className = `dot ${v.mood}`;
+    el.querySelector(".c-stop").hidden = !v.canStop;
+    el.querySelector(".c-cont").hidden = !v.sid;
+    // the whole chat opens in Claude once the turn is over (a running one would be cut short)
+    const canOpen = !!v.sid && !!s && s.status !== "running";
+    el.querySelector(".c-open").hidden = !canOpen;
+    el.querySelector(".card-name").classList.toggle("link", canOpen);
+    // the chat's answer: in the newest card, and in the one being continued
+    const ans = el.querySelector(".card-answer");
+    const text = (i === 0 || contKey === it.key) && s && s.status !== "running" ? plain(s.answer) : "";
+    if (ans.textContent !== text) ans.textContent = text;
+    ans.hidden = !text;
+    el.querySelector(".cont").hidden = contKey !== it.key;
+  });
+  return items;
+}
+
+function itemByKey(key) {
+  return cardItems(Date.now()).find((i) => i.key === key);
+}
+
+async function openCont(key) {
+  contKey = key;
+  renderCards(Date.now());
+  await frame();
+  sendRects();
+  await invoke("focus_input");
+  cards.querySelector(`[data-key="${CSS.escape(key)}"] .cont input`)?.focus();
+}
+
+async function closeCont() {
+  contKey = null;
+  renderCards(Date.now());
+  await frame();
+  sendRects();
+  invoke("blur_app");
+}
+
+async function continueCard(key, text) {
+  const it = itemByKey(key);
+  if (!it) return;
+  const sid = resolveId(it.task.sid, byId);
+  if (!sid) return;
+  let msg;
+  try {
+    msg = inboxMessage(text, false, crypto.randomUUID(), Date.now());
+    await invoke("submit", { sessionId: sid, body: msg });
+  } catch (err) {
+    cards.querySelector(`[data-key="${CSS.escape(key)}"] .cont input`).title = String(err.message || err);
     return;
   }
-  $("card-name").textContent = labelOf(s);
-  $("card-step").textContent = stepLine(s, now);
-  $("dot").className = moodOf(s, now);
+  const t = { sid, fresh: it.task.fresh, id: msg.id, text: it.task.text || msg.text, at: msg.createdAt, started: false, stopId: null };
+  tasks = tasks.filter((x) => x !== it.task).concat(t);
+  saveTasks();
+  contKey = null;
+  await setUi("card");
+  invoke("blur_app");
+}
+
+// the chat moves to the Claude app: its card has nothing left to do here
+async function openChat(key) {
+  const it = itemByKey(key);
+  if (!it) return;
+  const sid = resolveId(it.task.sid, byId);
+  const s = byId[sid];
+  if (!sid || !s || s.status === "running") return;
+  try {
+    await invoke("open_chat", { sessionId: sid, background: !!it.task.fresh });
+  } catch (err) {
+    cards.querySelector(`[data-key="${CSS.escape(key)}"] .card-step`).textContent = String(err.message || err);
+    return;
+  }
+  closeCard(key);
+}
+
+async function stopCard(key) {
+  const it = itemByKey(key);
+  if (!it) return;
+  const msg = stopMessage(crypto.randomUUID(), Date.now());
+  try {
+    await invoke("submit", { sessionId: resolveId(it.task.sid, byId), body: msg });
+  } catch {
+    return;
+  }
+  it.task.stopId = msg.id;
+  saveTasks();
+  renderCards(Date.now());
+}
+
+async function closeCard(key) {
+  const it = itemByKey(key);
+  if (!it) return;
+  tasks = tasks.filter((x) => x !== it.task);
+  saveTasks();
+  if (contKey === key) contKey = null;
+  if (cardItems(Date.now()).length === 0) return collapse();
+  renderCards(Date.now());
+  await frame();
+  sendRects();
 }
 
 function renderPicker(now) {
   const live = liveSessions(sessions, now);
-  const byId = Object.fromEntries(sessions.map((x) => [x.sessionId, x]));
-  const keep = picker.value || (lastSent && resolveId(lastSent.sid, byId));
+  const last = tasks[tasks.length - 1];
+  const keep = picker.value || (last && resolveId(last.sid, byId));
   picker.replaceChildren(
     ...live.map((s) => {
       const o = document.createElement("option");
@@ -158,7 +294,8 @@ function renderPicker(now) {
 }
 
 function updateSend() {
-  const ok = input.value.trim().length > 0 && !picker.hidden && picker.value;
+  const target = newChatBtn.classList.contains("on") || (!picker.hidden && picker.value);
+  const ok = input.value.trim().length > 0 && !!target;
   send.disabled = !ok;
   send.classList.toggle("ready", !!ok);
 }
@@ -167,13 +304,13 @@ function updateSend() {
 let ui = "idle";
 let expanded = false;
 let hovered = false;
-let autoCard = false; // the card was opened by a session wanting attention
 let cardSince = 0;
+let folded = false; // the person folded the cards while a task works: do not pop them back
 
 // tell Rust where the visible, clickable things are; everything else is click-through
 function sendRects() {
-  const rects = [pet, pill, form, card]
-    .filter((el) => !el.hidden)
+  const rects = [pet, pill, form, ...cards.children]
+    .filter((el) => !el.hidden && !(el.parentElement === cards && cards.hidden))
     .map((el) => {
       const r = el.getBoundingClientRect();
       return [r.x, r.y, r.width, r.height];
@@ -189,19 +326,20 @@ async function setUi(next) {
     await invoke("set_mode", { expanded });
   }
   const now = Date.now();
-  pill.hidden = next === "idle" || next === "input";
+  // the buttons show only under the mouse
+  pill.hidden = !hovered || next === "idle" || next === "input";
   collapseBtn.hidden = next !== "card";
   form.hidden = next !== "input";
-  card.hidden = !(next === "card" || (next === "pill" && liveSessions(sessions, now).length > 0));
-  if (!card.hidden) renderCard(now);
+  if (next !== "card") contKey = null;
+  refreshAnim();
+  // the open bar is one line: no cards under it
+  cards.hidden = !(next === "card" || next === "pill") || renderCards(now).length === 0;
   if (next === "card") cardSince = now;
-  if (next !== "card") autoCard = false;
   await frame();
   sendRects();
 }
 
 async function openInput() {
-  autoCard = false;
   await setUi("input");
   renderPicker(Date.now());
   await invoke("focus_input");
@@ -209,43 +347,104 @@ async function openInput() {
 }
 
 async function collapse() {
-  if (autoCard) dismissed.add(attention(Date.now())?.key);
+  folded = true;
   await setUi("idle");
   invoke("blur_app");
 }
 
-function setNewChat(on) {
-  newChatBtn.classList.toggle("on", on);
-  input.placeholder = on ? "Начать новый чат" : "Написать в сессию…";
+async function hide() {
+  await setUi("idle");
+  await invoke("hide_window");
+  invoke("blur_app");
 }
 
-// ---------- the 1 s loop: read the shared folder, update mood, card and picker
+// /horse or the hotkey: the horse is back, with the input open
+async function summon() {
+  await invoke("show_window");
+  oneShot = "hello";
+  refreshAnim();
+  await openInput();
+}
+
+setNewChat(true);
+
+function setNewChat(on) {
+  newChatBtn.classList.toggle("on", on);
+  // a new chat needs no session picked: the bar stays one line
+  $("target").hidden = on;
+  updateSend();
+  input.placeholder = on ? "Начать новый чат" : "Написать в эту сессию…";
+}
+
+// ---------- the 1 s loop: read the shared folder, update cards and picker
+let lastShowAt = null;
+
 async function tick() {
+  let st;
   try {
-    const st = await invoke("read_state");
-    sessions = st.sessions;
-    acks = st.acks;
+    st = await invoke("read_state");
   } catch {
     return;
   }
+  sessions = st.sessions;
+  acks = st.acks;
+  byId = Object.fromEntries(sessions.map((x) => [x.sessionId, x]));
   const now = Date.now();
-  mood = petMood(sessions, now);
-  refreshAnim();
-  const a = attention(now);
-  if (ui === "idle" && a && !dismissed.has(a.key)) {
-    autoCard = true;
-    await setUi("card");
+  let changed = false;
+  for (const t of tasks) {
+    if (t.fresh && !t.sid) {
+      const s = matchNewChat(t, sessions);
+      if (s) {
+        t.sid = s.sessionId;
+        t.started = true;
+        changed = true;
+      }
+      continue;
+    }
+    const ack = acks[resolveId(t.sid, byId)];
+    if (!t.started && t.id && ack && ack.id === t.id && ack.status !== "queued") {
+      t.started = true;
+      changed = true;
+    }
   }
-  if (ui === "card" && !hovered) {
-    const urgent = autoCard && a && (mood === "waiting" || mood === "failed") && !dismissed.has(a.key);
-    const stale = now - cardSince > 12_000;
-    if (autoCard && !a) await setUi("idle"); // the reason went away
-    else if (!urgent && stale) {
-      if (autoCard && a) dismissed.add(a.key);
+  // a chat that has closed leaves the stack: nothing to continue or stop there
+  const open = tasks.filter((t) => {
+    const s = t.started && t.sid ? byId[resolveId(t.sid, byId)] : null;
+    return !(t.started && t.sid) || isLive(s, now) || (s && s.answer); // an answer stays readable
+  });
+  if (open.length !== tasks.length) {
+    tasks.splice(0, tasks.length, ...open);
+    changed = true;
+  }
+  if (changed) saveTasks();
+  // /horse wrote show.json: a new stamp, or a fresh one when /horse just started us
+  if (st.showAt && st.showAt !== lastShowAt) {
+    const fresh = lastShowAt !== null || now - st.showAt < 15_000;
+    lastShowAt = st.showAt;
+    if (fresh) return summon();
+  } else if (lastShowAt === null) lastShowAt = st.showAt || 0;
+
+  const busy = cardItems(now).some((it) => {
+    if (!it.task) return false;
+    const m = taskView(it.task, byId, acks, now).mood;
+    return m === "working" || m === "waiting";
+  });
+  if (!busy) folded = false;
+  else if (ui === "idle" && !folded) await setUi("card");
+  if (ui === "card" && !hovered && contKey === null) {
+    if (!busy && !hasAnswer() && now - cardSince > 12_000) {
       await setUi("idle");
     }
   }
-  if (!card.hidden) renderCard(now);
+  if (!cards.hidden) {
+    const n = cards.getBoundingClientRect().height;
+    renderCards(now);
+    await frame();
+    if (cards.getBoundingClientRect().height !== n) {
+      await frame();
+      sendRects();
+    }
+  }
   if (ui === "input") renderPicker(now);
 }
 setInterval(tick, 1000);
@@ -259,6 +458,11 @@ listen("hover", async (e) => {
   } else if (!hovered && ui === "pill") {
     await sleep(600);
     if (!hovered && ui === "pill") await setUi("idle");
+  } else if (ui === "card") {
+    if (!hovered) await sleep(600);
+    pill.hidden = !hovered;
+    await frame();
+    sendRects();
   }
 });
 
@@ -270,6 +474,13 @@ listen("walk", (e) => {
 listen("second-instance", () => {
   oneShot = "hello";
   refreshAnim();
+});
+
+// ⌃⌥Space: hidden → back with the input open; input open → fold to the pet; else → input
+listen("hotkey", (e) => {
+  if (e.payload) return summon();
+  if (ui === "input") return collapse();
+  return openInput();
 });
 
 // ---------- drag vs click on the pet (the window itself follows the cursor in Rust)
@@ -307,8 +518,7 @@ pet.addEventListener("pointerup", async () => {
 
 $("btn-write").addEventListener("click", openInput);
 collapseBtn.addEventListener("click", collapse);
-$("btn-quit").addEventListener("click", () => invoke("quit"));
-card.addEventListener("click", openInput);
+$("btn-quit").addEventListener("click", hide);
 newChatBtn.addEventListener("click", () => {
   setNewChat(!newChatBtn.classList.contains("on"));
   input.focus();
@@ -321,10 +531,38 @@ input.addEventListener("keydown", (e) => {
 window.addEventListener("blur", () => {
   // clicked somewhere else: an empty input folds away by itself
   if (ui === "input" && !input.value.trim()) setUi("idle");
+  if (contKey !== null) {
+    const v = cards.querySelector(`[data-key="${CSS.escape(contKey)}"] .cont input`);
+    if (!v || !v.value.trim()) closeCont();
+  }
 });
+
+// default: every request is a new Claude Code chat in the background, in the picked session's project
+async function sendNewChat(text) {
+  const t = { sid: null, fresh: true, id: crypto.randomUUID(), text, at: Date.now(), started: false, stopId: null, short: null };
+  const folder = folderOf(byId[picker.value]?.cwd);
+  tasks = tasks.concat(t);
+  folded = false;
+  saveTasks();
+  input.value = "";
+  updateSend();
+  await setUi("card");
+  try {
+    // no window opens: `claude --bg` prints the new session's short id
+    t.short = await invoke("start_bg_chat", { text, folder });
+  } catch (err) {
+    t.error = String(err).slice(0, 160);
+  }
+  saveTasks();
+}
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
+  if (newChatBtn.classList.contains("on")) {
+    const text = input.value.trim();
+    if (text) await sendNewChat(text);
+    return;
+  }
   const sid = picker.value;
   if (!sid) return;
   let msg;
@@ -340,11 +578,12 @@ form.addEventListener("submit", async (e) => {
     input.title = `Не записалось: ${err}`;
     return;
   }
-  lastSent = { sid, id: msg.id, at: Date.now() };
+  tasks = tasks.concat({ sid, id: msg.id, text: msg.text, at: msg.createdAt, started: false, stopId: null });
+  folded = false;
+  saveTasks();
   input.value = "";
-  setNewChat(false);
+  setNewChat(true);
   updateSend();
-  autoCard = false;
   await setUi("card");
   invoke("blur_app");
 });

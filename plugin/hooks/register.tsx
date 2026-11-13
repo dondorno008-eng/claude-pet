@@ -2,8 +2,9 @@
 // submits the prompts the horse drops in its inbox. Protocol: docs/protocol.md.
 //
 // ~/.claude-pet/sessions/<sid>.json  written here: status, step, title
-// ~/.claude-pet/inbox/<sid>.json     written by the horse: { id, text, newChat }
+// ~/.claude-pet/inbox/<sid>.json     written by the horse: { id, text, newChat } or { id, stop }
 // ~/.claude-pet/acks/<sid>.json      written here: { id, status }
+// ~/.claude-pet/show.json            written here by /horse: the window shows itself
 //
 // Every hook only watches: `next(e)` decides, the pet never gates anything.
 // $.fs has no delete, so an inbox file stays until the horse drops it; the
@@ -23,10 +24,13 @@ type Pet = {
   launchedAt: number
   writing: Promise<void>
   pendingNewChat: null | { id: string; text: string; queuedAt: number }
+  // the main loop's running turn, for ■ Stop
+  turnId: string | null
   state: Record<string, unknown>
 }
 
 const POLL_MS = 1000
+const MAX_ANSWER = 6000
 const PULSE_EVERY_TICKS = 15
 const OVERLAY_STALE_MS = 60_000
 const MAX_TEXT = 8000
@@ -91,36 +95,59 @@ function submit($: EngineInterface, P: Pet, id: string, text: string, queuedAt: 
     .catch((err: unknown) => writeAck($, P, { id, status: 'failed', queuedAt, error: String(err) }))
 }
 
-async function launchOverlay($: EngineInterface, P: Pet) {
-  if (P.ctx === null) return
+async function launchOverlay($: EngineInterface, P: Pet, force = false) {
+  if (P.ctx === null) return false
   const now = await $.clock.now()
-  if (now - P.launchedAt < OVERLAY_STALE_MS) return
+  if (!force && now - P.launchedAt < OVERLAY_STALE_MS) return true
   P.launchedAt = now
   try {
     const o = JSON.parse(String(await $.fs.read(`${P.ctx.base}/overlay.json`))) as { pulseAt?: unknown }
-    if (typeof o.pulseAt === 'number' && now - o.pulseAt < OVERLAY_STALE_MS) return
+    if (typeof o.pulseAt === 'number' && now - o.pulseAt < OVERLAY_STALE_MS) return true
   } catch {
     // no overlay.json yet: the horse has never run
   }
   for (const app of [`${P.ctx.home}/Applications/${APP}`, `/Applications/${APP}`]) {
     if (!(await $.fs.exists(app))) continue
     await $.process.run(['open', '-g', app]).catch(() => undefined)
-    return
+    return true
   }
+  return false
+}
+
+// /horse: the window comes back (shown, input open), started first if it is not running
+async function summon($: EngineInterface, P: Pet) {
+  if (P.ctx === null) return 'Лошадка живёт только в открытой сессии Claude Code.'
+  await $.fs.write(`${P.ctx.base}/show.json`, JSON.stringify({ v: 1, at: await $.clock.now() })).catch(() => undefined)
+  if (!(await launchOverlay($, P, true))) return `Лошадка не установлена: нет ${APP} в ~/Applications и /Applications.`
+  return 'Лошадка здесь — пишите в строку под ней.'
+}
+
+async function stop($: EngineInterface, P: Pet, id: string) {
+  const at = await $.clock.now()
+  const turnId = P.turnId
+  if (turnId !== null) {
+    const err = await $.turn.abort({ turnId }).then(() => null, (e: unknown) => String(e))
+    if (err !== null) return writeAck($, P, { id, status: 'failed', queuedAt: at, error: err })
+  }
+  await writeAck($, P, { id, status: 'stopped', queuedAt: at, stoppedAt: at })
 }
 
 async function readInbox($: EngineInterface, P: Pet) {
   if (P.ctx === null) return
   const { inbox } = paths(P.ctx.base, P.ctx.sid)
   if (!(await $.fs.exists(inbox))) return
-  let msg: { id?: unknown; text?: unknown; newChat?: unknown }
+  let msg: { id?: unknown; text?: unknown; newChat?: unknown; stop?: unknown }
   try {
     msg = JSON.parse(String(await $.fs.read(inbox)))
   } catch {
     return // junk: the horse replaces the file atomically
   }
-  if (typeof msg.id !== 'string' || typeof msg.text !== 'string') return
-  if (msg.id === P.lastAckedId) return
+  if (typeof msg.id !== 'string' || msg.id === P.lastAckedId) return
+  if (msg.stop === true) {
+    P.lastAckedId = msg.id
+    return stop($, P, msg.id)
+  }
+  if (typeof msg.text !== 'string') return
   const id = msg.id
   const text = msg.text.slice(0, MAX_TEXT)
   P.lastAckedId = id
@@ -223,6 +250,7 @@ async function start($: EngineInterface, P: Pet, isInteractive: boolean | null, 
       continuedAs: null,
     })
     await note($, P, {})
+    await $.command.register({ name: 'horse', description: 'Позвать лошадку: окно с строкой ввода' }).catch(() => undefined)
     $.clock.every(POLL_MS, () => void poll($, P))
     await launchOverlay($, P)
   } finally {
@@ -242,6 +270,7 @@ export const register: Register = on => {
     launchedAt: -Infinity,
     writing: Promise.resolve(),
     pendingNewChat: null,
+    turnId: null,
     state: {},
   }
 
@@ -254,23 +283,34 @@ export const register: Register = on => {
   on('turn.start', async ($, e, next) => {
     // After a hot reload no session.start comes: start from the first turn.
     if (P.ctx === null) await start($, P, null, await $.session.cwd())
+    if (isMain(e)) P.turnId = e.turnId
     if (P.ctx !== null && isMain(e)) {
       const fresh = e.text !== '' && !e.text.startsWith('<bash-')
       const title = P.state.title ?? (fresh ? titleFrom(e.text) : null)
-      void note($, P, { status: 'running' as Status, step: 'Размышление…', title })
+      void note($, P, { status: 'running' as Status, step: 'Размышление…', title, answer: null })
       void launchOverlay($, P)
     }
     return next(e)
   })
 
   on('turn.complete', async ($, e, next) => {
+    if (isMain(e)) P.turnId = null
     if (P.ctx !== null && isMain(e)) {
-      const failed = e.reason === 'error' || e.reason === 'refusal'
-      const patch = failed ? { status: 'blocked' as Status } : { status: 'ready' as Status, doneAt: await $.clock.now() }
-      void note($, P, { ...patch, step: null })
+      const now = await $.clock.now()
+      const patch =
+        e.reason === 'error' || e.reason === 'refusal'
+          ? { status: 'blocked' as Status }
+          : e.reason === 'aborted'
+            ? { status: 'ready' as Status, stoppedAt: now }
+            : { status: 'ready' as Status, doneAt: now }
+      // the answer itself: the horse's card is the only place a background chat shows it
+      const answer = e.answer.trim() === '' ? null : e.answer.trim().slice(0, MAX_ANSWER)
+      void note($, P, { ...patch, step: null, answer })
     }
     return next(e)
   })
+
+  on('command.run', { command: 'horse' }, async $ => ({ text: await summon($, P) }))
 
   on('tool.call', async ($, e, next) => {
     if (P.ctx === null || !isMain(e)) return next(e)
