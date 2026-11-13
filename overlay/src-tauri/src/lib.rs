@@ -301,11 +301,15 @@ fn spawn_ticker(win: WebviewWindow, sh: Arc<Shared>) {
     std::thread::spawn(move || {
         let mut dir: i32 = 1;
         let mut drag_last_x: Option<i32> = None;
+        // the window is never key while the cursor merely passes, so WebKit sees no mouse
+        // moves and CSS :hover stays dead; the page lights buttons from this position instead
+        let mut last_cursor: Option<(i32, i32)> = None;
         let emit_walk = |walking: bool, dir: i32| {
             let _ = win.emit("walk", json!({ "walking": walking, "dir": dir }));
         };
         loop {
-            let busy = sh.dragging.load(Ordering::SeqCst);
+            // dragging or under the cursor: 30 Hz, so the button highlight keeps up
+            let busy = sh.dragging.load(Ordering::SeqCst) || !sh.ignoring.load(Ordering::SeqCst);
             std::thread::sleep(Duration::from_millis(if busy { 33 } else { 100 }));
             // read again after the sleep: a drag may have started meanwhile
             if sh.dragging.load(Ordering::SeqCst) {
@@ -344,6 +348,11 @@ fn spawn_ticker(win: WebviewWindow, sh: Arc<Shared>) {
                     let _ = win.set_ignore_cursor_events(!inside);
                     sh.ignoring.store(!inside, Ordering::SeqCst);
                     let _ = win.emit("hover", inside);
+                }
+                let cur = inside.then(|| (lx.round() as i32, ly.round() as i32));
+                if cur != last_cursor {
+                    last_cursor = cur;
+                    let _ = win.emit("cursor", cur.map(|(x, y)| json!({ "x": x, "y": y })));
                 }
             }
         }

@@ -34,17 +34,15 @@
     <div id="ui">
       <div id="pill" class="pill" hidden>
         <button id="btn-write" title="Написать Claude">✎</button>
+        <button id="btn-mic" class="mic" title="Наговорить Claude"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0" /><path d="M12 18v3" /></svg></button>
         <button id="btn-collapse" title="Свернуть" hidden>˅</button>
         <button id="btn-quit" title="Спрятать (вернуть: ⌃⌥Пробел или /horse)">✕</button>
       </div>
       <form id="ask" hidden>
-        <div id="target">
-          <select id="session" title="В какую сессию"></select>
-          <span id="no-session" hidden>Откройте Claude Code — лошадка увидит сессию</span>
-        </div>
         <div class="pill inputbar">
-          <button id="new-chat" type="button" title="Вкл — новый чат в фоне, без окна; выкл — написать в выбранную сессию">+</button>
-          <input id="prompt" type="text" placeholder="Написать в сессию…" autocomplete="off" maxlength="8000" />
+          <button id="mic-in" class="mic" type="button" title="Голосом (ещё раз — стоп)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0" /><path d="M12 18v3" /></svg></button>
+          <input id="prompt" type="text" placeholder="Спросить Claude — новый чат" autocomplete="off" maxlength="8000" />
+          <span id="wave" hidden><i></i><i></i><i></i><i></i><i></i></span>
           <button id="send" type="submit" title="Отправить" disabled>↑</button>
         </div>
       </form>

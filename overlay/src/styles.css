@@ -33,6 +33,27 @@ body {
   padding-bottom: 23px;
   box-sizing: border-box;
   pointer-events: none;
+  transition: transform 420ms cubic-bezier(0.45, 0, 0.3, 1);
+}
+
+/* input bar open: the horse hops to the bar's right end and looks down-left at the text;
+   its hooves stay on the bar, so the phone cord seems to come out of the bar */
+#stage.aside {
+  transform: translateX(95px);
+}
+
+#pet.hopping {
+  animation: hop 420ms ease-out;
+}
+
+@keyframes hop {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  45% {
+    transform: translateY(-22px);
+  }
 }
 
 #pet {
@@ -111,7 +132,8 @@ body {
   cursor: pointer;
 }
 
-.pill button:hover {
+.pill button:hover,
+.pill button.hot {
   background: #f0f0f2;
 }
 
@@ -122,45 +144,45 @@ body {
   gap: 6px;
 }
 
-#target {
-  max-width: 320px;
-}
-
-#session {
-  max-width: 320px;
-  font: inherit;
-  font-size: 12px;
-  border: 0;
-  border-radius: 8px;
-  padding: 3px 6px;
-  background: #fff;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.14);
-}
-
-#no-session {
-  display: inline-block;
-  font-size: 12px;
-  padding: 4px 10px;
-  border-radius: 8px;
-  background: #fff;
-  color: #48484a;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.14);
-}
-
 .inputbar {
   width: 340px;
   padding: 4px;
 }
 
-#new-chat {
+/* the mic: in the hover pill and on the left of the input bar */
+.mic {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: #48484a;
-  font-size: 18px;
-  line-height: 1;
+  --lvl: 0;
 }
 
-#new-chat.on {
-  background: #e4f0ff;
-  color: #0060df;
+/* recording: Claude's orange, a ring that breathes with the voice */
+.mic.rec,
+.mic.rec:hover,
+.mic.rec.hot {
+  background: #d97757;
+  color: #fff;
+  box-shadow: 0 0 0 calc(2px + var(--lvl) * 7px) rgba(217, 119, 87, 0.28);
+  transition: box-shadow 90ms linear;
+}
+
+/* five bars that follow the voice level while the mic listens */
+#wave {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 20px;
+  padding: 0 6px;
+}
+
+#wave i {
+  width: 3px;
+  height: 4px;
+  border-radius: 2px;
+  background: #d97757;
+  transition: height 90ms linear;
 }
 
 #prompt {
@@ -184,7 +206,8 @@ body {
   background: #0a84ff;
 }
 
-#send.ready:hover {
+#send.ready:hover,
+#send.ready.hot {
   background: #0070e0;
 }
 
@@ -235,7 +258,9 @@ body {
 }
 
 .card-head button:hover,
-.cont button:hover {
+.cont button:hover,
+.card-head button.hot,
+.cont button.hot {
   background: #f0f0f2;
   color: #1c1c1e;
 }
@@ -244,7 +269,8 @@ body {
   cursor: pointer;
 }
 
-.card-name.link:hover {
+.card-name.link:hover,
+.card-name.link.hot {
   text-decoration: underline;
 }
 

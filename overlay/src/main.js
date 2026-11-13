@@ -10,8 +10,9 @@ const pill = $("pill");
 const form = $("ask");
 const input = $("prompt");
 const send = $("send");
-const picker = $("session");
-const newChatBtn = $("new-chat");
+const micIn = $("mic-in");
+const micPill = $("btn-mic");
+const wave = $("wave");
 const cards = $("cards");
 const collapseBtn = $("btn-collapse");
 
@@ -107,10 +108,34 @@ let contKey = null;
 // four poses, set by the person alone (other sessions never move the horse):
 // rest → lies down and stays lying ("done": stand → kneel → lie); dragged → gallops;
 // clicked (input open) → stands ("idle" is the pack's standing pose)
+// input open: the horse hops to the right of the window and looks down-left at the text;
+// mic on: holds a corded phone whose cord runs into the bar and listens
 function refreshAnim() {
   if (dragging) return play(walk.dir < 0 ? "running-left" : "running-right");
+  if (hop) return play(hop > 0 ? "running-right" : "running-left");
   if (oneShot) return play(oneShot);
-  play(ui === "input" ? "idle" : "done");
+  if (ui !== "input") return play("done");
+  const pose = rec ? "listening" : "reading";
+  play(!pack || pack.animations[pose] ? pose : "idle"); // an older pack has no such pose
+}
+
+// the hop between the horse's spot and the right of the input bar
+const stage = $("stage");
+const HOP_MS = 420;
+let hop = 0; // 1 → to the bar, -1 ← back, 0 standing
+
+async function hopTo(aside) {
+  if (aside === stage.classList.contains("aside")) return;
+  hop = aside ? 1 : -1;
+  if (oneShot === "hangup") oneShot = null;
+  refreshAnim();
+  stage.classList.toggle("aside", aside);
+  pet.classList.add("hopping");
+  await sleep(HOP_MS);
+  pet.classList.remove("hopping");
+  hop = 0;
+  refreshAnim();
+  sendRects();
 }
 
 // what the stack under the horse shows: the last few requests the person sent from the horse
@@ -275,27 +300,8 @@ async function closeCard(key) {
   sendRects();
 }
 
-function renderPicker(now) {
-  const live = liveSessions(sessions, now);
-  const last = tasks[tasks.length - 1];
-  const keep = picker.value || (last && resolveId(last.sid, byId));
-  picker.replaceChildren(
-    ...live.map((s) => {
-      const o = document.createElement("option");
-      o.value = s.sessionId;
-      o.textContent = labelOf(s);
-      return o;
-    }),
-  );
-  if (live.some((s) => s.sessionId === keep)) picker.value = keep;
-  picker.hidden = live.length === 0;
-  $("no-session").hidden = live.length > 0;
-  updateSend();
-}
-
 function updateSend() {
-  const target = newChatBtn.classList.contains("on") || (!picker.hidden && picker.value);
-  const ok = input.value.trim().length > 0 && !!target;
+  const ok = input.value.trim().length > 0;
   send.disabled = !ok;
   send.classList.toggle("ready", !!ok);
 }
@@ -325,6 +331,8 @@ async function setUi(next) {
   collapseBtn.hidden = next !== "card";
   form.hidden = next !== "input";
   if (next !== "card") contKey = null;
+  if (next !== "input") stopRec();
+  hopTo(next === "input");
   refreshAnim();
   // the open bar is one line: no cards under it
   cards.hidden = !(next === "card" || next === "pill") || renderCards(now).length === 0;
@@ -335,7 +343,7 @@ async function setUi(next) {
 
 async function openInput() {
   await setUi("input");
-  renderPicker(Date.now());
+  updateSend();
   await invoke("focus_input");
   input.focus();
 }
@@ -360,17 +368,130 @@ async function summon() {
   await openInput();
 }
 
-setNewChat(true);
+// ---------- voice: macOS dictation through WebKit's SpeechRecognition; the bars follow the mic level
+const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
+const PLACEHOLDER = input.placeholder;
+const BARS = [0.55, 0.8, 1, 0.8, 0.55];
+let rec = null; // the running recognizer
+let meter = null; // { stream, ctx, an, buf } when the page may read the mic level itself
+let level = 0; // 0..1: the ring and the bars
+let bump = 0; // no meter: a heard word kicks the bars
 
-function setNewChat(on) {
-  newChatBtn.classList.toggle("on", on);
-  // a new chat needs no session picked: the bar stays one line
-  $("target").hidden = on;
-  updateSend();
-  input.placeholder = on ? "Начать новый чат" : "Написать в эту сессию…";
+const MIC_ERRORS = {
+  "not-allowed": "Нет доступа к микрофону: Системные настройки → Конфиденциальность",
+  "service-not-allowed": "Включите диктовку: Системные настройки → Клавиатура → Диктовка",
+  "audio-capture": "Микрофон не найден",
+  network: "Нет сети для распознавания речи",
+};
+
+function setRecUi(on) {
+  micIn.classList.toggle("rec", on);
+  micPill.classList.toggle("rec", on);
+  micIn.title = on ? "Стоп" : "Голосом (ещё раз — стоп)";
+  wave.hidden = !on;
+  // the phone comes out with the mic and goes away after it
+  if (!on && ui === "input" && pack?.animations.hangup) oneShot = "hangup";
+  refreshAnim();
 }
 
-// ---------- the 1 s loop: read the shared folder, update cards and picker
+function drawLevel(t) {
+  if (!rec) return;
+  let target;
+  if (meter) {
+    meter.an.getByteTimeDomainData(meter.buf);
+    let sum = 0;
+    for (const v of meter.buf) sum += ((v - 128) / 128) ** 2;
+    target = Math.min(1, Math.sqrt(sum / meter.buf.length) * 5);
+  } else {
+    bump *= 0.93;
+    target = 0.12 + bump * 0.8;
+  }
+  level += (target - level) * 0.35;
+  micIn.style.setProperty("--lvl", level.toFixed(3));
+  [...wave.children].forEach((bar, i) => {
+    const wob = 0.7 + 0.3 * Math.sin(t / 110 + i * 1.7);
+    bar.style.height = `${4 + 14 * level * BARS[i] * wob}px`;
+  });
+  requestAnimationFrame(drawLevel);
+}
+
+async function openMeter(r) {
+  if (!navigator.mediaDevices?.getUserMedia) return;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    if (rec !== r) return stream.getTracks().forEach((x) => x.stop());
+    const ctx = new AudioContext();
+    const an = ctx.createAnalyser();
+    an.fftSize = 512;
+    ctx.createMediaStreamSource(stream).connect(an);
+    meter = { stream, ctx, an, buf: new Uint8Array(an.fftSize) };
+  } catch {
+    // no level for the page: the bars move on recognized words
+  }
+}
+
+function closeMeter() {
+  if (!meter) return;
+  meter.stream.getTracks().forEach((x) => x.stop());
+  meter.ctx.close();
+  meter = null;
+}
+
+function startRec() {
+  if (rec) return;
+  input.placeholder = PLACEHOLDER;
+  if (!Speech) {
+    input.placeholder = "Голосовой ввод недоступен на этом Mac";
+    return;
+  }
+  const r = new Speech();
+  r.lang = "ru-RU";
+  r.continuous = true;
+  r.interimResults = true;
+  const before = input.value.trim();
+  r.onresult = (e) => {
+    let said = "";
+    for (const res of e.results) said += res[0].transcript;
+    input.value = [before, said.trim()].filter(Boolean).join(" ");
+    bump = 1;
+    updateSend();
+  };
+  r.onerror = (e) => {
+    if (e.error === "aborted" || e.error === "no-speech") return;
+    input.placeholder = MIC_ERRORS[e.error] || `Голос: ${e.error}`;
+  };
+  r.onend = () => {
+    if (rec === r) stopRec();
+  };
+  rec = r;
+  level = 0;
+  setRecUi(true);
+  try {
+    r.start();
+  } catch (err) {
+    stopRec();
+    input.placeholder = `Голос: ${err.message || err}`;
+    return;
+  }
+  openMeter(r);
+  requestAnimationFrame(drawLevel);
+}
+
+function stopRec() {
+  if (!rec) return;
+  const r = rec;
+  rec = null;
+  try {
+    r.stop();
+  } catch {
+    // already over
+  }
+  closeMeter();
+  setRecUi(false);
+  if (ui === "input") input.focus();
+}
+
+// ---------- the 1 s loop: read the shared folder, update the cards
 let lastShowAt = null;
 
 async function tick() {
@@ -439,7 +560,6 @@ async function tick() {
       sendRects();
     }
   }
-  if (ui === "input") renderPicker(now);
 }
 setInterval(tick, 1000);
 tick();
@@ -458,6 +578,18 @@ listen("hover", async (e) => {
     await frame();
     sendRects();
   }
+});
+
+// the window is not key while the cursor just passes, so CSS :hover never fires;
+// Rust sends the cursor position and the button under it gets .hot
+let hot = null;
+listen("cursor", (e) => {
+  const p = e.payload;
+  const el = p ? document.elementFromPoint(p.x, p.y)?.closest("button, .card-name.link") ?? null : null;
+  if (el === hot) return;
+  hot?.classList.remove("hot");
+  hot = el;
+  hot?.classList.add("hot");
 });
 
 listen("walk", (e) => {
@@ -513,28 +645,33 @@ pet.addEventListener("pointerup", async () => {
 $("btn-write").addEventListener("click", openInput);
 collapseBtn.addEventListener("click", collapse);
 $("btn-quit").addEventListener("click", hide);
-newChatBtn.addEventListener("click", () => {
-  setNewChat(!newChatBtn.classList.contains("on"));
-  input.focus();
+// the pill's mic: the input opens already listening
+micPill.addEventListener("click", async () => {
+  await openInput();
+  startRec();
 });
-picker.addEventListener("change", () => input.focus());
+micIn.addEventListener("click", () => (rec ? stopRec() : startRec()));
 input.addEventListener("input", updateSend);
 input.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") collapse();
+  if (e.key !== "Escape") return;
+  if (rec) stopRec();
+  else collapse();
 });
 window.addEventListener("blur", () => {
   // clicked somewhere else: an empty input folds away by itself
-  if (ui === "input" && !input.value.trim()) setUi("idle");
+  // (not while the mic listens: macOS's microphone question takes the focus too)
+  if (ui === "input" && !rec && !input.value.trim()) setUi("idle");
   if (contKey !== null) {
     const v = cards.querySelector(`[data-key="${CSS.escape(contKey)}"] .cont input`);
     if (!v || !v.value.trim()) closeCont();
   }
 });
 
-// default: every request is a new Claude Code chat in the background, in the picked session's project
+// every request is a new Claude Code chat in the background, in the project of the freshest
+// live session (the folder Claude itself would most likely pick), else in the home folder
 async function sendNewChat(text) {
   const t = { sid: null, fresh: true, id: crypto.randomUUID(), text, at: Date.now(), started: false, stopId: null, short: null };
-  const folder = folderOf(byId[picker.value]?.cwd);
+  const folder = folderOf(liveSessions(sessions, t.at)[0]?.cwd);
   tasks = tasks.concat(t);
   folded = false;
   saveTasks();
@@ -552,34 +689,9 @@ async function sendNewChat(text) {
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
-  if (newChatBtn.classList.contains("on")) {
-    const text = input.value.trim();
-    if (text) await sendNewChat(text);
-    return;
-  }
-  const sid = picker.value;
-  if (!sid) return;
-  let msg;
-  try {
-    msg = inboxMessage(input.value, newChatBtn.classList.contains("on"), crypto.randomUUID(), Date.now());
-  } catch (err) {
-    input.title = String(err.message || err);
-    return;
-  }
-  try {
-    await invoke("submit", { sessionId: sid, body: msg });
-  } catch (err) {
-    input.title = `Не записалось: ${err}`;
-    return;
-  }
-  tasks = tasks.concat({ sid, id: msg.id, text: msg.text, at: msg.createdAt, started: false, stopId: null });
-  folded = false;
-  saveTasks();
-  input.value = "";
-  setNewChat(true);
-  updateSend();
-  await setUi("card");
-  invoke("blur_app");
+  stopRec();
+  const text = input.value.trim();
+  if (text) await sendNewChat(text);
 });
 
 window.addEventListener("resize", sendRects);

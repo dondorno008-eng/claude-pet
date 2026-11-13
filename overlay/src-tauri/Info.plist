@@ -5,5 +5,10 @@
   <!-- no Dock icon, no menu bar: the horse is the whole app -->
   <key>LSUIElement</key>
   <true/>
+  <!-- the mic button: macOS asks once, with these words -->
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Лошадка слушает, пока горит кнопка микрофона, — чтобы вы могли наговорить вопрос Claude.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>Лошадка превращает сказанное в текст вопроса для Claude.</string>
 </dict>
 </plist>
