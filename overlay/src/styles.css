@@ -33,6 +33,27 @@ body {
   padding-bottom: 23px;
   box-sizing: border-box;
   pointer-events: none;
+  transition: transform 420ms cubic-bezier(0.45, 0, 0.3, 1);
+}
+
+/* input bar open: the horse hops to the bar's right end and looks down-left at the text;
+   its hooves stay on the bar, so the phone cord seems to come out of the bar */
+#stage.aside {
+  transform: translateX(95px);
+}
+
+#pet.hopping {
+  animation: hop 420ms ease-out;
+}
+
+@keyframes hop {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  45% {
+    transform: translateY(-22px);
+  }
 }
 
 #pet {

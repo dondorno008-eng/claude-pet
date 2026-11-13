@@ -108,10 +108,34 @@ let contKey = null;
 // four poses, set by the person alone (other sessions never move the horse):
 // rest → lies down and stays lying ("done": stand → kneel → lie); dragged → gallops;
 // clicked (input open) → stands ("idle" is the pack's standing pose)
+// input open: the horse hops to the right of the window and looks down-left at the text;
+// mic on: holds a corded phone whose cord runs into the bar and listens
 function refreshAnim() {
   if (dragging) return play(walk.dir < 0 ? "running-left" : "running-right");
+  if (hop) return play(hop > 0 ? "running-right" : "running-left");
   if (oneShot) return play(oneShot);
-  play(ui === "input" ? "idle" : "done");
+  if (ui !== "input") return play("done");
+  const pose = rec ? "listening" : "reading";
+  play(!pack || pack.animations[pose] ? pose : "idle"); // an older pack has no such pose
+}
+
+// the hop between the horse's spot and the right of the input bar
+const stage = $("stage");
+const HOP_MS = 420;
+let hop = 0; // 1 → to the bar, -1 ← back, 0 standing
+
+async function hopTo(aside) {
+  if (aside === stage.classList.contains("aside")) return;
+  hop = aside ? 1 : -1;
+  if (oneShot === "hangup") oneShot = null;
+  refreshAnim();
+  stage.classList.toggle("aside", aside);
+  pet.classList.add("hopping");
+  await sleep(HOP_MS);
+  pet.classList.remove("hopping");
+  hop = 0;
+  refreshAnim();
+  sendRects();
 }
 
 // what the stack under the horse shows: the last few requests the person sent from the horse
@@ -308,6 +332,7 @@ async function setUi(next) {
   form.hidden = next !== "input";
   if (next !== "card") contKey = null;
   if (next !== "input") stopRec();
+  hopTo(next === "input");
   refreshAnim();
   // the open bar is one line: no cards under it
   cards.hidden = !(next === "card" || next === "pill") || renderCards(now).length === 0;
@@ -364,6 +389,9 @@ function setRecUi(on) {
   micPill.classList.toggle("rec", on);
   micIn.title = on ? "Стоп" : "Голосом (ещё раз — стоп)";
   wave.hidden = !on;
+  // the phone comes out with the mic and goes away after it
+  if (!on && ui === "input" && pack?.animations.hangup) oneShot = "hangup";
+  refreshAnim();
 }
 
 function drawLevel(t) {
