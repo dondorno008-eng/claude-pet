@@ -64,26 +64,68 @@ function play(name) {
   next();
 }
 
-fetch("pack/pet.json")
+// every pack of packs/ is in the app (scripts/copy-pack.mjs); the person picks one with ⇄ in the pill
+const PET_KEY = "pet.pack";
+const petBtn = $("btn-pet");
+let pets = []; // [{ id, name }], the horse first
+let petId = localStorage.getItem(PET_KEY) || "horse";
+let loading = 0; // a newer pick wins over a slower older one
+
+function petTitle() {
+  const i = pets.findIndex((p) => p.id === petId);
+  const nextPet = pets[(i + 1) % pets.length];
+  petBtn.title = nextPet ? `Сменить питомца → ${nextPet.name}` : "Сменить питомца";
+}
+
+async function loadPet(id, greet) {
+  const ticket = ++loading;
+  const p = await fetch(`pack/${id}/pet.json`).then((r) => r.json());
+  const img = new Image();
+  await new Promise((ok, fail) => {
+    img.onload = ok;
+    img.onerror = fail;
+    img.src = `pack/${id}/${p.spritesheetPath}`;
+  });
+  if (ticket !== loading) return;
+  // the old pack's timer must not step into the new pack's frames
+  clearTimeout(timer);
+  timer = null;
+  pack = p;
+  petId = id;
+  const side = p.cell * SCALE;
+  sprite.style.width = `${side}px`;
+  sprite.style.height = `${side}px`;
+  sprite.style.backgroundImage = `url(${img.src})`;
+  sprite.style.backgroundSize = `${img.naturalWidth * SCALE}px ${img.naturalHeight * SCALE}px`;
+  sprite.hidden = false;
+  $("fallback")?.remove();
+  pet.setAttribute("aria-label", p.displayName || id);
+  petTitle();
+  anim = null;
+  if (greet && p.animations.hello) oneShot = "hello";
+  refreshAnim();
+  sendRects();
+}
+
+fetch("pack/index.json")
   .then((r) => r.json())
-  .then((p) => {
-    const img = new Image();
-    img.onload = () => {
-      pack = p;
-      const side = p.cell * SCALE;
-      sprite.style.width = `${side}px`;
-      sprite.style.height = `${side}px`;
-      sprite.style.backgroundImage = `url(${img.src})`;
-      sprite.style.backgroundSize = `${img.naturalWidth * SCALE}px ${img.naturalHeight * SCALE}px`;
-      sprite.hidden = false;
-      $("fallback").remove();
-      anim = null;
-      refreshAnim();
-      sendRects();
-    };
-    img.src = `pack/${p.spritesheetPath}`;
+  .then((list) => {
+    pets = list;
+    if (!pets.some((p) => p.id === petId)) petId = pets[0].id; // a pack that left the app
+    petBtn.hidden = pets.length < 2;
+    return loadPet(petId, false);
   })
-  .catch(() => {}); // no pack: keep the stand-in
+  .catch((e) => console.warn("pack:", e)); // no pack: keep the stand-in
+
+function nextPet() {
+  if (pets.length < 2) return;
+  const i = pets.findIndex((p) => p.id === petId);
+  const id = pets[(i + 1) % pets.length].id;
+  localStorage.setItem(PET_KEY, id);
+  petId = id;
+  petTitle();
+  loadPet(id, true).catch(() => {});
+}
 
 // ---------- what the sessions are doing (files of docs/protocol.md, via Rust)
 let sessions = [];
@@ -647,6 +689,7 @@ pet.addEventListener("pointerup", async () => {
 });
 
 $("btn-write").addEventListener("click", openInput);
+petBtn.addEventListener("click", nextPet);
 collapseBtn.addEventListener("click", collapse);
 $("btn-quit").addEventListener("click", hide);
 // the pill's mic: the input opens already listening
